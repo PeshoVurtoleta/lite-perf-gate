@@ -1,0 +1,51 @@
+# @zakkster/lite-perf-gate
+
+Zero-GC and performance regression gate for node:test.
+
+## What it does
+
+Proves a hot path allocates nothing, or names what did. Three signals:
+  1. Scavenge count (perf_hooks GC minor) -- transient allocation.
+  2. Custom counters (user-supplied statsOf) -- exact engine internals.
+  3. Retained-heap delta (memoryUsage + gc) -- leak detector.
+
+Scaling verdict: measure at N and k*N. Zero-alloc => ~0 scavenges at both.
+Detector self-validation: positive control (must scavenge) + negative
+control (must not scavenge) run on every gate invocation. If either fails,
+the gate refuses to judge.
+
+## Primary API
+
+zgcSuite(config) -- register node:test cases.
+  config.scenarios: Scenario[]   -- the hot paths to gate.
+  config.counters: Record<string, number>  -- per-counter max delta.
+  config.mustFail: Scenario[]    -- must trip the gate (self-test).
+  config.N: number (default 200000), config.k: number (default 8).
+
+measure(scenario, {N, k}) -- raw MeasureResult.
+verdict(result, thresholds) -- { pass: boolean, reasons: string[] }.
+runGate(config) -- standalone report, same config as zgcSuite.
+
+## Scenario shape
+
+{ name, setup(), hot(state, n), statsOf?(state), teardown?(state) }
+
+setup() builds the graph. hot(state, n) is the ONLY code in the window.
+statsOf returns numeric counters; deltas are computed automatically.
+
+## Run with
+
+node --expose-gc --max-semi-space-size=4 --test your.test.mjs
+
+--expose-gc is required. --max-semi-space-size=4 sharpens sensitivity.
+
+## Why scavenge counting
+
+Retained-heap delta misses transient garbage (freed before snapshot).
+V8 sampling profiler misses it (reports live-at-stop). Scavenge counting
+is the only reliable detector of transient allocation in V8.
+
+## Zero dependencies
+
+Single-file ESM. Imports only node:perf_hooks, node:timers/promises,
+node:test, node:assert/strict.

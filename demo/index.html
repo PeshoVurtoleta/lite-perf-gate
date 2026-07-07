@@ -1,0 +1,1627 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>lite-perf-gate 1.0.0 -- the shape of a leak</title>
+    <style>
+        :root {
+            --bg: #05100a;
+            --bg: oklch(0.16 0.03 165);
+            --panel: #0a1a10;
+            --panel: oklch(0.21 0.035 165);
+            --grid: #1f6f4529;
+            --grid: oklch(0.55 0.11 165 / 0.16);
+            --ink: #7df7c8;
+            --ink: oklch(0.90 0.15 168);
+            --ink-dim: #3f9c78;
+            --ink-dim: oklch(0.68 0.09 168);
+            --ink-faint: #2a6f56;
+            --ink-faint: oklch(0.52 0.06 168);
+            --warn: #ffb454;
+            --warn: oklch(0.82 0.15 68);
+            --fail: #ff6b6b;
+            --fail: oklch(0.68 0.18 25);
+            --pass: #7df7c8;
+            --pass: oklch(0.90 0.15 168);
+            --violet: #bb86fc;
+            --violet: oklch(0.73 0.17 300);
+            --edge: #2f5a4e80;
+            --edge: oklch(0.42 0.06 168 / 0.5);
+            --edge-hi: #4f8a7440;
+            --edge-hi: oklch(0.55 0.08 168 / 0.5);
+            --r: 0.5rem;
+            --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            margin: 0;
+        }
+
+        body {
+            background: linear-gradient(transparent 0 calc(1.5rem - 1px), var(--grid) calc(1.5rem - 1px) 1.5rem),
+            linear-gradient(90deg, transparent 0 calc(1.5rem - 1px), var(--grid) calc(1.5rem - 1px) 1.5rem),
+            var(--bg);
+            background-size: 1.5rem 1.5rem;
+            color: var(--ink);
+            font-family: var(--mono);
+            font-size: 0.9rem;
+            line-height: 1.5;
+            padding: 1.5rem;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .wrap {
+            max-width: 68rem;
+            margin: 0 auto;
+        }
+
+        header {
+            border-bottom: 1px solid var(--edge);
+            padding-bottom: 0.9rem;
+            margin-bottom: 1.2rem;
+        }
+
+        h1 {
+            font-size: 1.15rem;
+            margin: 0 0 0.2rem;
+            letter-spacing: 0.02em;
+        }
+
+        h1 .v {
+            color: var(--ink-faint);
+            font-weight: 400;
+        }
+
+        .sub {
+            color: var(--ink-dim);
+            font-size: 0.82rem;
+            max-width: 54rem;
+        }
+
+        .sub .sim {
+            color: var(--warn);
+        }
+
+        code {
+            color: var(--ink);
+            background: color-mix(in oklab, var(--ink) 10%, transparent);
+            padding: 0 0.25rem;
+            border-radius: 3px;
+        }
+
+        /* -- tabs / scenes -- */
+        #tabs {
+            display: flex;
+            gap: 0.4rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        #tabs button {
+            font: inherit;
+            color: var(--ink-dim);
+            background: transparent;
+            border: 1px solid var(--edge);
+            border-radius: var(--r);
+            padding: 0.4rem 0.9rem;
+            cursor: pointer;
+            letter-spacing: 0.04em;
+            font-size: 0.74rem;
+            text-transform: uppercase;
+        }
+
+        #tabs button.active {
+            color: var(--bg);
+            background: var(--ink);
+            border-color: var(--ink);
+        }
+
+        @media (hover: hover) {
+            #tabs button:hover:not(.active) {
+                color: var(--ink);
+                border-color: var(--ink-faint);
+            }
+        }
+
+        .scene {
+            display: none;
+        }
+
+        .scene.active {
+            display: block;
+        }
+
+        /* -- cards & layout -- */
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--edge);
+            border-radius: var(--r);
+            padding: 0.9rem 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .card h2 {
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: var(--ink-faint);
+            margin: 0 0 0.7rem;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 0.5rem;
+        }
+
+        .card h2 .r {
+            color: var(--ink-dim);
+            font-weight: 400;
+            letter-spacing: 0;
+            text-transform: none;
+            text-align: right;
+        }
+
+        .cols {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 22rem;
+            gap: 1rem;
+            align-items: start;
+        }
+
+        @media (max-width: 56rem) {
+            .cols {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .cols2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        @media (max-width: 56rem) {
+            .cols2 {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* -- scope -- */
+        canvas {
+            display: block;
+            width: 100%;
+            border-radius: calc(var(--r) - 2px);
+            background: var(--bg);
+        }
+
+        .scope {
+            height: 14rem;
+        }
+
+        .scope-sm {
+            height: 10rem;
+        }
+
+        .scope-mini {
+            height: 5rem;
+        }
+
+        .cal {
+            color: var(--ink-faint);
+            font-size: 0.72rem;
+            margin-top: 0.5rem;
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .cal .k {
+            color: var(--ink-dim);
+        }
+
+        .cal .dot {
+            width: 0.5rem;
+            height: 0.5rem;
+            border-radius: 50%;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 0.35rem;
+        }
+
+        .cal .dot.fail-c {
+            background: var(--fail);
+        }
+
+        .cal .dot.pass-c {
+            background: var(--pass);
+        }
+
+        /* -- chips -- */
+        .chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            margin-bottom: 0.8rem;
+        }
+
+        .chips button {
+            font: inherit;
+            color: var(--ink-dim);
+            background: transparent;
+            border: 1px solid var(--edge);
+            border-radius: var(--r);
+            padding: 0.35rem 0.65rem;
+            cursor: pointer;
+            font-size: 0.74rem;
+            letter-spacing: 0.02em;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .chips button.active {
+            color: var(--bg);
+            background: var(--ink);
+            border-color: var(--ink);
+        }
+
+        .chips button.active .dot {
+            background: var(--bg);
+        }
+
+        .chips .dot {
+            width: 0.5rem;
+            height: 0.5rem;
+            border-radius: 50%;
+            background: var(--ink);
+            flex-shrink: 0;
+        }
+
+        .chips .dot.warn {
+            background: var(--warn);
+        }
+
+        .chips .dot.fail {
+            background: var(--fail);
+        }
+
+        .chips .dot.violet {
+            background: var(--violet);
+        }
+
+        @media (hover: hover) {
+            .chips button:hover:not(.active) {
+                color: var(--ink);
+                border-color: var(--ink-faint);
+            }
+        }
+
+        /* -- sliders -- */
+        .sliders {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 0.5rem;
+            margin-bottom: 0.8rem;
+        }
+
+        .sliders label {
+            color: var(--ink-dim);
+            font-size: 0.76rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            justify-content: space-between;
+        }
+
+        .sliders label .name {
+            min-width: 7rem;
+        }
+
+        .sliders label .val {
+            color: var(--ink);
+            min-width: 3.5rem;
+            text-align: right;
+        }
+
+        input[type=range] {
+            accent-color: var(--ink);
+            flex: 1;
+            min-width: 0;
+        }
+
+        /* -- verdict -- */
+        .verdict-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 0.5rem;
+            gap: 0.5rem;
+        }
+
+        .verdict-head .name {
+            color: var(--ink);
+            font-size: 0.86rem;
+            font-weight: 600;
+            word-break: break-word;
+        }
+
+        .badge {
+            display: inline-block;
+            font-size: 0.68rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 3px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            flex-shrink: 0;
+        }
+
+        .badge.pass {
+            background: var(--pass);
+            color: var(--bg);
+        }
+
+        .badge.fail {
+            background: var(--fail);
+            color: var(--bg);
+        }
+
+        .badge.warn {
+            background: var(--warn);
+            color: var(--bg);
+        }
+
+        .metrics {
+            font-size: 0.78rem;
+            color: var(--ink-dim);
+        }
+
+        .metrics .row {
+            display: grid;
+            grid-template-columns: 8rem 1fr auto;
+            gap: 0.5rem;
+            padding: 0.2rem 0;
+            border-top: 1px solid var(--edge);
+        }
+
+        .metrics .row:first-child {
+            border-top: none;
+        }
+
+        .metrics .row .lbl {
+            color: var(--ink-faint);
+        }
+
+        .metrics .row .val {
+            color: var(--ink);
+            font-variant-numeric: tabular-nums;
+            text-align: right;
+        }
+
+        .metrics .row .val.warn {
+            color: var(--warn);
+        }
+
+        .metrics .row .val.fail {
+            color: var(--fail);
+        }
+
+        .metrics .row .val.pass {
+            color: var(--pass);
+        }
+
+        .metrics .bar {
+            grid-column: 1 / -1;
+            height: 0.3rem;
+            border-radius: 2px;
+            background: var(--edge);
+            overflow: hidden;
+            margin-top: 0.15rem;
+        }
+
+        .metrics .bar .fill {
+            height: 100%;
+            background: var(--ink);
+            width: var(--w, 0%);
+            transition: width 0.25s;
+        }
+
+        .metrics .bar .fill.fail {
+            background: var(--fail);
+        }
+
+        .metrics .bar .fill.warn {
+            background: var(--warn);
+        }
+
+        .reasons {
+            margin-top: 0.6rem;
+            padding-top: 0.6rem;
+            border-top: 1px solid var(--edge);
+            font-size: 0.74rem;
+            color: var(--fail);
+        }
+
+        .reasons .r-title {
+            color: var(--ink-faint);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-size: 0.66rem;
+            margin-bottom: 0.3rem;
+        }
+
+        .reasons ul {
+            margin: 0;
+            padding-left: 1.1rem;
+        }
+
+        .reasons li {
+            margin: 0.15rem 0;
+        }
+
+        /* -- detector LED -- */
+        .led {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.76rem;
+            color: var(--ink-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        .led .lamp {
+            width: 0.7rem;
+            height: 0.7rem;
+            border-radius: 50%;
+            background: var(--ink-faint);
+            box-shadow: 0 0 0.4rem var(--ink-faint);
+        }
+
+        .led.on .lamp {
+            background: var(--pass);
+            box-shadow: 0 0 0.6rem var(--pass);
+        }
+
+        .led.off .lamp {
+            background: var(--fail);
+            box-shadow: 0 0 0.6rem var(--fail);
+        }
+
+        /* -- explain / log -- */
+        .explain {
+            color: var(--ink-dim);
+            font-size: 0.78rem;
+            line-height: 1.55;
+        }
+
+        .explain .k {
+            color: var(--ink);
+        }
+
+        .note {
+            color: var(--ink-faint);
+            font-size: 0.72rem;
+            margin-top: 0.7rem;
+            line-height: 1.5;
+        }
+
+        /* -- counter bars (scene 3) -- */
+        .cbar-row {
+            display: grid;
+            grid-template-columns: 10rem 1fr 5rem;
+            gap: 0.5rem;
+            align-items: center;
+            padding: 0.35rem 0;
+            border-top: 1px solid var(--edge);
+            font-size: 0.78rem;
+        }
+
+        .cbar-row:first-child {
+            border-top: none;
+        }
+
+        .cbar-row .name {
+            color: var(--ink-dim);
+        }
+
+        .cbar-row .val {
+            color: var(--ink);
+            font-variant-numeric: tabular-nums;
+            text-align: right;
+        }
+
+        .cbar-row .val.fail {
+            color: var(--fail);
+        }
+
+        .cbar-row .val.pass {
+            color: var(--pass);
+        }
+
+        .cbar-row .track {
+            height: 0.4rem;
+            border-radius: 2px;
+            background: var(--edge);
+            overflow: hidden;
+        }
+
+        .cbar-row .track .fill {
+            height: 100%;
+            background: var(--ink);
+            width: var(--w, 0%);
+            transition: width 0.25s;
+        }
+
+        .cbar-row .track .fill.fail {
+            background: var(--fail);
+        }
+
+        .cbar-row .track .fill.warn {
+            background: var(--warn);
+        }
+
+        .cbar-empty {
+            grid-column: 1 / -1;
+            color: var(--ink-faint);
+            text-align: center;
+            padding: 0.6rem 0;
+            font-size: 0.76rem;
+        }
+
+        /* utility */
+        .mt-lg {
+            margin-top: 1rem;
+        }
+
+        .mt-md {
+            margin-top: 0.7rem;
+        }
+
+        .chips button.dim {
+            opacity: 0.45;
+        }
+
+        /* -- pipeline diagram (SVG) -- */
+        .flow svg {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+
+        .flow .st {
+            fill: var(--panel);
+            stroke: var(--edge-hi);
+            stroke-width: 1.2;
+        }
+
+        .flow .st.active {
+            stroke: var(--ink);
+            stroke-width: 2;
+        }
+
+        .flow .lbl {
+            fill: var(--ink-dim);
+            font: 600 11px var(--mono);
+            text-anchor: middle;
+            letter-spacing: 0.04em;
+        }
+
+        .flow .lbl.active {
+            fill: var(--ink);
+        }
+
+        .flow .edge {
+            stroke: var(--ink-faint);
+            stroke-width: 1.2;
+            fill: none;
+        }
+
+        .flow .edge.active {
+            stroke: var(--ink);
+        }
+
+        .flow .head {
+            fill: var(--ink-faint);
+        }
+
+        .flow .head.active {
+            fill: var(--ink);
+        }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <header>
+        <h1>lite-perf-gate <span class="v">1.0.0 -- the shape of a leak</span></h1>
+        <p class="sub">
+            A two-point scaling probe: measure at <code>N</code> and <code>k&middot;N</code> iterations,
+            count minor GCs (scavenges), and verdict. A zero-alloc hot path stays flat at both;
+            an allocating one shows scavenges scaling with total bytes. The detector self-validates
+            each run via positive/negative controls -- if either misbehaves, the gate refuses to judge.
+            <span class="sim">Traces below simulate the physics -- real perf-gate runs under
+      Node with <code>--expose-gc --max-semi-space-size=4</code>.</span>
+        </p>
+    </header>
+
+    <nav id="tabs">
+        <button data-scene="scope" class="active">1. Scope</button>
+        <button data-scene="detector">2. Detector</button>
+        <button data-scene="counters">3. Counters</button>
+    </nav>
+
+    <!-- ===== SCENE 1: SCOPE ===== -->
+    <section class="scene active" data-scene="scope">
+        <div class="cols">
+            <div>
+                <div class="card">
+                    <h2>Scope <span class="r"><span id="s1Range">scavenges vs iterations, 0 to k&middot;N</span></span>
+                    </h2>
+                    <canvas id="s1Scope" class="scope"></canvas>
+                    <div class="cal">
+                        <span>N <span class="k" id="s1CalN">--</span></span>
+                        <span>k&middot;N <span class="k" id="s1CalKN">--</span></span>
+                        <span>threshold <span class="k" id="s1CalTh">--</span></span>
+                        <span>ceiling <span class="k" id="s1CalCeil">--</span></span>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Retained heap KB <span class="r">leak detector -- survives <code>gc()</code></span></h2>
+                    <canvas id="s1Retained" class="scope-mini"></canvas>
+                </div>
+
+                <div class="card flow">
+                    <h2>Pipeline <span class="r">what perf-gate runs per scenario</span></h2>
+                    <svg viewBox="0 0 700 78" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Gate pipeline">
+                        <defs>
+                            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
+                                    orient="auto">
+                                <path d="M0,0 L10,5 L0,10 z" class="head"/>
+                            </marker>
+                            <marker id="ah-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
+                                    orient="auto">
+                                <path d="M0,0 L10,5 L0,10 z" class="head active"/>
+                            </marker>
+                        </defs>
+                        <g class="st">
+                            <rect x="8" y="24" width="80" height="30" rx="6"/>
+                        </g>
+                        <text class="lbl" x="48" y="43">setup()</text>
+                        <g class="st">
+                            <rect x="108" y="24" width="86" height="30" rx="6"/>
+                        </g>
+                        <text class="lbl" x="151" y="43">warm 20k</text>
+                        <g class="st">
+                            <rect x="214" y="24" width="60" height="30" rx="6"/>
+                        </g>
+                        <text class="lbl" x="244" y="43">gc2()</text>
+                        <g class="st active" id="s1FlowMeas">
+                            <rect x="294" y="24" width="122" height="30" rx="6"/>
+                        </g>
+                        <text class="lbl active" id="s1FlowMeasL" x="355" y="43">measure @ N</text>
+                        <g class="st" id="s1FlowMeasK">
+                            <rect x="436" y="24" width="140" height="30" rx="6"/>
+                        </g>
+                        <text class="lbl" id="s1FlowMeasKL" x="506" y="43">measure @ k&middot;N</text>
+                        <g class="st">
+                            <rect x="596" y="24" width="70" height="30" rx="6"/>
+                        </g>
+                        <text class="lbl" x="631" y="43">verdict</text>
+                        <path class="edge" d="M88,39  L108,39" marker-end="url(#ah)"/>
+                        <path class="edge" d="M194,39 L214,39" marker-end="url(#ah)"/>
+                        <path class="edge" d="M274,39 L294,39" marker-end="url(#ah)"/>
+                        <path class="edge" id="s1FlowE1" d="M416,39 L436,39" marker-end="url(#ah)"/>
+                        <path class="edge" d="M576,39 L596,39" marker-end="url(#ah)"/>
+                    </svg>
+                </div>
+            </div>
+
+            <div>
+                <div class="card">
+                    <h2>Scenarios <span class="r">click to probe</span></h2>
+                    <div class="chips" id="s1Chips"></div>
+                    <div class="sliders">
+                        <label><span class="name">N</span>
+                            <input type="range" id="s1N" min="50000" max="500000" value="200000" step="50000">
+                            <span class="val" id="s1NVal">200k</span></label>
+                        <label><span class="name">k (scale)</span>
+                            <input type="range" id="s1K" min="2" max="16" value="8" step="1">
+                            <span class="val" id="s1KVal">8</span></label>
+                        <label><span class="name">maxScavenges</span>
+                            <input type="range" id="s1MaxScav" min="0" max="16" value="2" step="1">
+                            <span class="val" id="s1MaxScavVal">2</span></label>
+                    </div>
+                    <p class="note">
+                        Scaling verdict: <code>minorHi &gt; maxScavenges</code> at <code>k&middot;N</code>
+                        means allocation. Not hostage to any single absolute threshold -- a real
+                        zero-alloc path stays under it at every scale.
+                    </p>
+                </div>
+
+                <div class="card">
+                    <h2>Verdict <span class="r">what the gate would report</span></h2>
+                    <div class="verdict-head">
+                        <span class="name" id="s1VName">--</span>
+                        <span class="badge" id="s1VBadge">--</span>
+                    </div>
+                    <div class="metrics">
+                        <div class="row"><span class="lbl">scavenges N</span><span></span><span class="val"
+                                                                                                id="s1MinorLo">--</span>
+                        </div>
+                        <div class="row"><span class="lbl">scavenges k&middot;N</span><span></span><span class="val"
+                                                                                                         id="s1MinorHi">--</span>
+                            <span class="bar"><span class="fill" id="s1MinorBar"></span></span>
+                        </div>
+                        <div class="row"><span class="lbl">retained KB</span><span></span><span class="val"
+                                                                                                id="s1RetHi">--</span>
+                            <span class="bar"><span class="fill" id="s1RetBar"></span></span>
+                        </div>
+                    </div>
+                    <div class="reasons" id="s1Reasons" hidden>
+                        <div class="r-title">reasons</div>
+                        <ul id="s1ReasonsList"></ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ===== SCENE 2: DETECTOR ===== -->
+    <section class="scene" data-scene="detector">
+        <div class="card">
+            <h2>Detector self-validation <span class="r">every run, before judging anything</span></h2>
+            <div class="cols2">
+                <div>
+                    <div class="cal"><span><span class="dot fail-c"></span>positive control -- <code>{x,y,z,w}</code> per iter</span>
+                    </div>
+                    <canvas id="s2PosScope" class="scope-sm"></canvas>
+                    <div class="cal">
+                        <span>needs <span class="k">&gt; maxScav + 3</span></span>
+                        <span>got <span class="k" id="s2PosCount">--</span></span>
+                    </div>
+                </div>
+                <div>
+                    <div class="cal"><span><span class="dot pass-c"></span>negative control -- arithmetic only</span>
+                    </div>
+                    <canvas id="s2NegScope" class="scope-sm"></canvas>
+                    <div class="cal">
+                        <span>needs <span class="k">&le; maxScav</span></span>
+                        <span>got <span class="k" id="s2NegCount">--</span></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="verdict-head mt-lg">
+                <span class="led" id="s2Led"><span class="lamp"></span><span id="s2LedText">DETECTOR: --</span></span>
+                <span class="badge" id="s2Badge">--</span>
+            </div>
+
+            <p class="explain mt-md">
+                A silent false pass is the failure mode gate tooling has to eliminate.
+                <span class="k">perf-gate</span> requires the positive control to force
+                <span class="k">more than <code>maxScavenges + 3</code></span> scavenges (proof
+                the detector sees allocation) and the negative control to stay
+                <span class="k">at or below <code>maxScavenges</code></span> (proof the runtime
+                flags are right). If either fails, no scenario is judged; you get an explicit
+                "detector broken" instead of a spurious PASS.
+            </p>
+        </div>
+
+        <div class="cols2">
+            <div class="card">
+                <h2>Tuning knobs <span class="r">what your V8 flags do</span></h2>
+                <div class="sliders">
+                    <label><span class="name">semi-space (KB)</span>
+                        <input type="range" id="s2Semi" min="256" max="4096" value="1024" step="256">
+                        <span class="val" id="s2SemiVal">1024</span></label>
+                    <label><span class="name">N</span>
+                        <input type="range" id="s2N" min="50000" max="500000" value="200000" step="50000">
+                        <span class="val" id="s2NVal">200k</span></label>
+                    <label><span class="name">k</span>
+                        <input type="range" id="s2K" min="2" max="16" value="8" step="1">
+                        <span class="val" id="s2KVal">8</span></label>
+                    <label><span class="name">maxScavenges</span>
+                        <input type="range" id="s2MaxScav" min="0" max="16" value="2" step="1">
+                        <span class="val" id="s2MaxScavVal">2</span></label>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Why <code>--max-semi-space-size=4</code> <span class="r">sharpen the probe</span></h2>
+                <p class="explain">
+                    V8's default young generation is <span class="k">16 MB</span>. At 200k iterations
+                    of 64-byte objects, you produce <span class="k">~12 MB</span> -- possibly fitting
+                    without a single scavenge. Shrinking to <span class="k">4 MB</span> forces
+                    scavenges on smaller cumulative allocation and sharpens sensitivity. Drag the
+                    semi-space slider left and watch the positive-control trace steepen; the
+                    negative stays flat.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- ===== SCENE 3: COUNTERS ===== -->
+    <section class="scene" data-scene="counters">
+        <div class="cols">
+            <div>
+                <div class="card">
+                    <h2>Scope <span class="r">scenario: <span id="s3Name">--</span></span></h2>
+                    <canvas id="s3Scope" class="scope-sm"></canvas>
+                    <div class="cal">
+                        <span>scavenges <span class="k" id="s3Scav">--</span></span>
+                        <span>retained <span class="k" id="s3Ret">--</span></span>
+                        <span>counters <span class="k">from <code>statsOf()</code></span></span>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Counter deltas <span class="r"><code>statsOf(state)</code> after -- before</span></h2>
+                    <div id="s3Counters"></div>
+                    <p class="note">
+                        Scavenges and retained heap look fine for a pooled builder that grows rarely.
+                        But engine internals -- <code>poolGrowths</code>,
+                        <code>totalAllocations</code>, node births -- carry information the two
+                        heap signals don't. <code>statsOf</code> deltas are checked against
+                        thresholds the same way; a failure names the counter, not just "the
+                        gate tripped".
+                    </p>
+                </div>
+            </div>
+
+            <div>
+                <div class="card">
+                    <h2>Threshold config <span class="r">what the suite would set</span></h2>
+                    <div class="chips" id="s3Chips"></div>
+                    <div class="sliders">
+                        <label><span class="name">poolGrowths max</span>
+                            <input type="range" id="s3PgMax" min="0" max="32" value="0" step="1">
+                            <span class="val" id="s3PgMaxVal">0</span></label>
+                        <label><span class="name">totalAllocs max</span>
+                            <input type="range" id="s3TaMax" min="0" max="200000" value="0" step="4096">
+                            <span class="val" id="s3TaMaxVal">0</span></label>
+                    </div>
+                    <p class="note">
+                        A common shape: <code>{ poolGrowths: 0 }</code>. A well-tuned pool
+                        allocates once at <code>setup()</code>; any growth during the
+                        measurement window means the initial size was wrong.
+                    </p>
+                </div>
+
+                <div class="card">
+                    <h2>Verdict <span class="r">three signals, all-must-pass</span></h2>
+                    <div class="verdict-head">
+                        <span class="name" id="s3VName">--</span>
+                        <span class="badge" id="s3VBadge">--</span>
+                    </div>
+                    <div class="metrics">
+                        <div class="row"><span class="lbl">scavenges</span><span></span><span class="val" id="s3MScav">--</span>
+                        </div>
+                        <div class="row"><span class="lbl">retained KB</span><span></span><span class="val" id="s3MRet">--</span>
+                        </div>
+                        <div class="row"><span class="lbl">counter fail</span><span></span><span class="val"
+                                                                                                 id="s3MCtr">--</span>
+                        </div>
+                    </div>
+                    <div class="reasons" id="s3Reasons" hidden>
+                        <div class="r-title">reasons</div>
+                        <ul id="s3ReasonsList"></ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+
+<script type="module">
+    // -- lite-perf-gate demo -- browser visualization of the physics.
+    // The library imports node:perf_hooks / node:test / node:timers/promises,
+    // so it cannot run in the browser. The scope traces here simulate the exact
+    // signal the real Node harness measures: scavenge count as a function of
+    // (iterations * bytesPerIter / semiSpaceBytes), retained-heap KB as
+    // (iterations * bytesPerIter * retainedFrac / 1024), and counter deltas.
+
+    const TAU = Math.PI * 2;
+    const DPR = Math.min(2, window.devicePixelRatio || 1);
+    const MONO_FONT = 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+
+    // ---------------------------------------------------------------------------
+    // Cached DOM refs
+    // ---------------------------------------------------------------------------
+
+    const $tabs = document.getElementById('tabs');
+    const $scenes = document.querySelectorAll('section.scene');
+
+    const $s1Scope = document.getElementById('s1Scope');
+    const $s1Retained = document.getElementById('s1Retained');
+    const $s1Chips = document.getElementById('s1Chips');
+    const $s1N = document.getElementById('s1N');
+    const $s1NVal = document.getElementById('s1NVal');
+    const $s1K = document.getElementById('s1K');
+    const $s1KVal = document.getElementById('s1KVal');
+    const $s1MaxScav = document.getElementById('s1MaxScav');
+    const $s1MaxScavVal = document.getElementById('s1MaxScavVal');
+    const $s1CalN = document.getElementById('s1CalN');
+    const $s1CalKN = document.getElementById('s1CalKN');
+    const $s1CalTh = document.getElementById('s1CalTh');
+    const $s1CalCeil = document.getElementById('s1CalCeil');
+    const $s1Range = document.getElementById('s1Range');
+    const $s1VName = document.getElementById('s1VName');
+    const $s1VBadge = document.getElementById('s1VBadge');
+    const $s1MinorLo = document.getElementById('s1MinorLo');
+    const $s1MinorHi = document.getElementById('s1MinorHi');
+    const $s1RetHi = document.getElementById('s1RetHi');
+    const $s1MinorBar = document.getElementById('s1MinorBar');
+    const $s1RetBar = document.getElementById('s1RetBar');
+    const $s1Reasons = document.getElementById('s1Reasons');
+    const $s1ReasonsList = document.getElementById('s1ReasonsList');
+    const $s1FlowMeas = document.getElementById('s1FlowMeas');
+    const $s1FlowMeasL = document.getElementById('s1FlowMeasL');
+    const $s1FlowMeasK = document.getElementById('s1FlowMeasK');
+    const $s1FlowMeasKL = document.getElementById('s1FlowMeasKL');
+    const $s1FlowE1 = document.getElementById('s1FlowE1');
+
+    const $s2PosScope = document.getElementById('s2PosScope');
+    const $s2NegScope = document.getElementById('s2NegScope');
+    const $s2PosCount = document.getElementById('s2PosCount');
+    const $s2NegCount = document.getElementById('s2NegCount');
+    const $s2Led = document.getElementById('s2Led');
+    const $s2LedText = document.getElementById('s2LedText');
+    const $s2Badge = document.getElementById('s2Badge');
+    const $s2Semi = document.getElementById('s2Semi');
+    const $s2SemiVal = document.getElementById('s2SemiVal');
+    const $s2N = document.getElementById('s2N');
+    const $s2NVal = document.getElementById('s2NVal');
+    const $s2K = document.getElementById('s2K');
+    const $s2KVal = document.getElementById('s2KVal');
+    const $s2MaxScav = document.getElementById('s2MaxScav');
+    const $s2MaxScavVal = document.getElementById('s2MaxScavVal');
+
+    const $s3Scope = document.getElementById('s3Scope');
+    const $s3Chips = document.getElementById('s3Chips');
+    const $s3Name = document.getElementById('s3Name');
+    const $s3Scav = document.getElementById('s3Scav');
+    const $s3Ret = document.getElementById('s3Ret');
+    const $s3Counters = document.getElementById('s3Counters');
+    const $s3PgMax = document.getElementById('s3PgMax');
+    const $s3PgMaxVal = document.getElementById('s3PgMaxVal');
+    const $s3TaMax = document.getElementById('s3TaMax');
+    const $s3TaMaxVal = document.getElementById('s3TaMaxVal');
+    const $s3VName = document.getElementById('s3VName');
+    const $s3VBadge = document.getElementById('s3VBadge');
+    const $s3MScav = document.getElementById('s3MScav');
+    const $s3MRet = document.getElementById('s3MRet');
+    const $s3MCtr = document.getElementById('s3MCtr');
+    const $s3Reasons = document.getElementById('s3Reasons');
+    const $s3ReasonsList = document.getElementById('s3ReasonsList');
+
+    // ---------------------------------------------------------------------------
+    // Scenarios -- module-scope constants, never allocated per-frame.
+    //
+    // Each scenario models what perf-gate would measure:
+    //   bytesPerIter   -- transient allocation per hot() iteration (drives scavenges)
+    //   retainedFrac   -- what fraction survives gc() (drives retained-heap KB)
+    //   counters       -- { name: iters => count }; simulates statsOf deltas
+    //   growthBursts   -- optional: iters between simulated pool-grow events
+    // ---------------------------------------------------------------------------
+
+    const SEMI_SPACE_KB_DEFAULT = 1024;    // scene 1 / 3 pin; scene 2 exposes as slider
+
+    const SCENARIOS = [
+        {
+            name: 'CONTROL- (arithmetic)',
+            short: 'CONTROL-',
+            hue: 168, kind: 'pass',
+            bytesPerIter: 0, retainedFrac: 0, counters: null
+        },
+        {
+            name: 'zero-GC signal graph',
+            short: 'signal graph',
+            hue: 158, kind: 'pass',
+            bytesPerIter: 0, retainedFrac: 0,
+            counters: {poolGrowths: () => 0, totalAllocations: () => 0}
+        },
+        {
+            name: 'closure per iter (arr.map)',
+            short: 'closure/iter',
+            hue: 25, kind: 'fail',
+            bytesPerIter: 72, retainedFrac: 0, counters: null
+        },
+        {
+            name: 'CONTROL+ ({x,y,z,w} per iter)',
+            short: 'CONTROL+',
+            hue: 25, kind: 'fail',
+            bytesPerIter: 40, retainedFrac: 0.35, counters: null
+        },
+        {
+            // The whole point of scene 3: this scenario looks FINE on both heap
+            // signals (0 scavenges, 0 retained) but a statsOf counter reveals
+            // engine-internal growth. Only lite-perf-gate's third signal catches it.
+            name: 'growing pool (rare, silent)',
+            short: 'growing pool',
+            hue: 300, kind: 'sneaky',
+            bytesPerIter: 0, retainedFrac: 0,
+            counters: {
+                // ~4 grows over 1.6M iters, well below any scavenge threshold
+                poolGrowths: (n) => Math.floor(n / 400000),
+                totalAllocations: (n) => Math.floor(n / 400000) * 32768
+            }
+        }
+    ];
+
+    const POS_CONTROL_IDX = 3;
+    const NEG_CONTROL_IDX = 0;
+
+    // ---------------------------------------------------------------------------
+    // Simulation -- pure functions of scenario + parameters.
+    //
+    // scavenges(n) = floor(n * bytesPerIter / semiSpaceBytes)
+    //              + bursts from growthBursts (each growth flushes semi-space).
+    // retainedKB(n) = n * bytesPerIter * retainedFrac / 1024.
+    // ---------------------------------------------------------------------------
+
+    function scavengesAt(sc, iters, semiSpaceKB) {
+        const bytes = iters * sc.bytesPerIter;
+        return Math.floor(bytes / (semiSpaceKB * 1024));
+    }
+
+    function retainedKBAt(sc, iters) {
+        return (iters * sc.bytesPerIter * sc.retainedFrac) / 1024;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Verdict -- mirrors PerfGate.verdict() logic for the demo.
+    // Reasons collected into a module-scope scratch array (no per-call alloc for
+    // the array header itself; string entries are unavoidable).
+    // ---------------------------------------------------------------------------
+
+    const SCRATCH_REASONS = [];
+
+    function verdictOf(sc, N, k, semiSpaceKB, maxScav, maxRetKB, counterCaps) {
+        SCRATCH_REASONS.length = 0;
+        const kN = k * N;
+        const minorHi = scavengesAt(sc, kN, semiSpaceKB);
+        const retHi = retainedKBAt(sc, kN);
+
+        if (minorHi > maxScav) {
+            SCRATCH_REASONS.push('scavenges: ' + minorHi + ' > ' + maxScav + ' (transient allocation)');
+        }
+        if (retHi > maxRetKB) {
+            SCRATCH_REASONS.push('retained: ' + retHi.toFixed(0) + 'KB > ' + maxRetKB + 'KB');
+        }
+        if (sc.counters && counterCaps) {
+            for (const key in counterCaps) {
+                if (sc.counters[key]) {
+                    const actual = sc.counters[key](kN);
+                    if (actual > counterCaps[key]) {
+                        SCRATCH_REASONS.push(key + ': ' + actual + ' > ' + counterCaps[key]);
+                    }
+                }
+            }
+        }
+        return {pass: SCRATCH_REASONS.length === 0, reasons: SCRATCH_REASONS};
+    }
+
+    // ---------------------------------------------------------------------------
+    // Format helpers -- called on parameter change / sweep-end, not per frame.
+    // ---------------------------------------------------------------------------
+
+    function fmtK(n) {
+        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return (n / 1e3).toFixed(0) + 'k';
+        return String(n);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Canvas resize -- called once at init and on window resize.
+    // ---------------------------------------------------------------------------
+
+    function fitCanvas(cvs) {
+        const r = cvs.getBoundingClientRect();
+        cvs.width = Math.max(1, Math.round(r.width * DPR));
+        cvs.height = Math.max(1, Math.round(r.height * DPR));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Scope drawing -- shared by all scenes.
+    // ---------------------------------------------------------------------------
+
+    function drawScope(cvs, sc, N, k, semiSpaceKB, maxScav, revealFrac, drawReference) {
+        const ctx = cvs.getContext('2d');
+        const W = cvs.width, H = cvs.height;
+        ctx.clearRect(0, 0, W, H);
+
+        const kN = k * N;
+        const posRef = SCENARIOS[POS_CONTROL_IDX];
+        const refMax = scavengesAt(posRef, kN, semiSpaceKB);
+        const mainMax = scavengesAt(sc, kN, semiSpaceKB);
+        let ceil = Math.max(refMax, mainMax, maxScav + 4, 4);
+
+        // grid
+        ctx.strokeStyle = 'oklch(0.55 0.11 165 / 0.16)';
+        ctx.lineWidth = 1 * DPR;
+        ctx.beginPath();
+        for (let i = 1; i < 10; i++) {
+            const x = (i / 10) * W;
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, H);
+        }
+        for (let j = 1; j < 4; j++) {
+            const y = (j / 4) * H;
+            ctx.moveTo(0, y);
+            ctx.lineTo(W, y);
+        }
+        ctx.stroke();
+
+        // threshold band
+        const yTh = H - (maxScav / ceil) * H;
+        ctx.strokeStyle = 'oklch(0.82 0.15 68 / 0.55)';
+        ctx.lineWidth = 1.4 * DPR;
+        ctx.setLineDash([6 * DPR, 4 * DPR]);
+        ctx.beginPath();
+        ctx.moveTo(0, yTh);
+        ctx.lineTo(W, yTh);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = (9 * DPR) + 'px ' + MONO_FONT;
+        ctx.fillStyle = 'oklch(0.82 0.15 68)';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText('maxScav=' + maxScav, 6 * DPR, Math.max(11 * DPR, yTh - 4 * DPR));
+
+        // N marker + kN edge label
+        const xN = W * (N / kN);
+        ctx.strokeStyle = 'oklch(0.68 0.09 168 / 0.7)';
+        ctx.lineWidth = 1 * DPR;
+        ctx.setLineDash([3 * DPR, 3 * DPR]);
+        ctx.beginPath();
+        ctx.moveTo(xN, 0);
+        ctx.lineTo(xN, H);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'oklch(0.68 0.09 168)';
+        ctx.fillText('N', xN + 3 * DPR, 11 * DPR);
+        ctx.fillText('kN', W - 20 * DPR, 11 * DPR);
+
+        // reference trace (positive control) drawn dashed dim behind the main
+        if (drawReference && sc !== posRef) {
+            ctx.strokeStyle = 'oklch(0.68 0.18 25 / 0.45)';
+            ctx.lineWidth = 1.2 * DPR;
+            ctx.setLineDash([4 * DPR, 3 * DPR]);
+            traceScavenges(ctx, posRef, kN, semiSpaceKB, W, H, ceil, 1.0);
+            ctx.setLineDash([]);
+        }
+
+        // main trace up to reveal
+        ctx.strokeStyle = 'oklch(0.72 0.14 ' + sc.hue + ')';
+        ctx.lineWidth = 2 * DPR;
+        traceScavenges(ctx, sc, kN, semiSpaceKB, W, H, ceil, revealFrac);
+
+        // phosphor sweep head
+        if (revealFrac < 1) {
+            const headIters = kN * revealFrac;
+            const headScav = scavengesAt(sc, headIters, semiSpaceKB);
+            const hx = revealFrac * W;
+            const hy = H - (headScav / ceil) * H;
+            ctx.fillStyle = 'oklch(0.92 0.16 ' + sc.hue + ')';
+            ctx.beginPath();
+            ctx.arc(hx, hy, 3 * DPR, 0, TAU);
+            ctx.fill();
+            ctx.fillStyle = 'oklch(0.92 0.16 ' + sc.hue + ' / 0.3)';
+            ctx.beginPath();
+            ctx.arc(hx, hy, 7 * DPR, 0, TAU);
+            ctx.fill();
+        }
+        return ceil;
+    }
+
+    // Stepwise trace of scavenges(iters). Ops per call = O(W / stepPx) canvas ops,
+    // no JS-side allocations beyond the arc path buffer inside canvas.
+    function traceScavenges(ctx, sc, kN, semiSpaceKB, W, H, ceil, revealFrac) {
+        const revealX = revealFrac * W;
+        const stepPx = 3 * DPR;
+        const steps = Math.max(1, Math.ceil(revealX / stepPx));
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i <= steps; i++) {
+            const px = Math.min(revealX, i * stepPx);
+            const iters = (px / W) * kN;
+            const sv = scavengesAt(sc, iters, semiSpaceKB);
+            const y = H - (sv / ceil) * H;
+            if (!started) {
+                ctx.moveTo(px, y);
+                started = true;
+            } else ctx.lineTo(px, y);
+        }
+        ctx.stroke();
+    }
+
+    // Retained-KB trace -- linear in iters when retainedFrac > 0.
+    function drawRetained(cvs, sc, N, k, revealFrac) {
+        const ctx = cvs.getContext('2d');
+        const W = cvs.width, H = cvs.height;
+        ctx.clearRect(0, 0, W, H);
+
+        const kN = k * N;
+        const at = retainedKBAt(sc, kN);
+        const ceil = Math.max(at * 1.1, 128);
+
+        // grid
+        ctx.strokeStyle = 'oklch(0.55 0.11 165 / 0.16)';
+        ctx.lineWidth = 1 * DPR;
+        ctx.beginPath();
+        for (let i = 1; i < 8; i++) {
+            const x = (i / 8) * W;
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, H);
+        }
+        ctx.stroke();
+
+        // 64 KB threshold
+        const yTh = H - (64 / ceil) * H;
+        if (yTh >= 0 && yTh <= H) {
+            ctx.strokeStyle = 'oklch(0.82 0.15 68 / 0.5)';
+            ctx.lineWidth = 1 * DPR;
+            ctx.setLineDash([4 * DPR, 3 * DPR]);
+            ctx.beginPath();
+            ctx.moveTo(0, yTh);
+            ctx.lineTo(W, yTh);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.font = (9 * DPR) + 'px ' + MONO_FONT;
+            ctx.fillStyle = 'oklch(0.82 0.15 68)';
+            ctx.fillText('64KB', 4 * DPR, Math.max(11 * DPR, yTh - 3 * DPR));
+        }
+
+        // trace + area fill
+        const endY = H - (retainedKBAt(sc, kN * revealFrac) / ceil) * H;
+        const revealX = revealFrac * W;
+        ctx.fillStyle = 'oklch(0.72 0.14 ' + sc.hue + ' / 0.15)';
+        ctx.beginPath();
+        ctx.moveTo(0, H);
+        ctx.lineTo(0, H);
+        ctx.lineTo(revealX, endY);
+        ctx.lineTo(revealX, H);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = 'oklch(0.72 0.14 ' + sc.hue + ')';
+        ctx.lineWidth = 2 * DPR;
+        ctx.beginPath();
+        ctx.moveTo(0, H);
+        ctx.lineTo(revealX, endY);
+        ctx.stroke();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Scene 1 -- state + rendering
+    // Initial values hooked from the DOM inputs, never hardcoded in JS.
+    // ---------------------------------------------------------------------------
+
+    let s1SelIdx = 0;
+    let s1N_v = +$s1N.value;
+    let s1K_v = +$s1K.value;
+    let s1MaxScav_v = +$s1MaxScav.value;
+
+    function s1BuildChips() {
+        let html = '';
+        for (let i = 0; i < SCENARIOS.length; i++) {
+            const sc = SCENARIOS[i];
+            const cls = sc.kind === 'fail' ? 'fail' : sc.kind === 'sneaky' ? 'violet' : '';
+            html += '<button data-idx="' + i + '"' + (i === s1SelIdx ? ' class="active"' : '') +
+                '><span class="dot ' + cls + '"></span>' + sc.short + '</button>';
+        }
+        $s1Chips.innerHTML = html;
+    }
+
+    function s1UpdateVerdict() {
+        const sc = SCENARIOS[s1SelIdx];
+        const v = verdictOf(sc, s1N_v, s1K_v, SEMI_SPACE_KB_DEFAULT, s1MaxScav_v, 64, null);
+        const kN = s1K_v * s1N_v;
+        const minorLo = scavengesAt(sc, s1N_v, SEMI_SPACE_KB_DEFAULT);
+        const minorHi = scavengesAt(sc, kN, SEMI_SPACE_KB_DEFAULT);
+        const retHi = retainedKBAt(sc, kN);
+
+        $s1VName.textContent = sc.name;
+        $s1VBadge.className = 'badge ' + (v.pass ? 'pass' : 'fail');
+        $s1VBadge.textContent = v.pass ? 'PASS' : 'FAIL';
+        $s1MinorLo.textContent = String(minorLo);
+        $s1MinorHi.textContent = String(minorHi);
+        $s1MinorHi.className = 'val ' + (minorHi > s1MaxScav_v ? 'fail' : 'pass');
+        $s1RetHi.textContent = retHi.toFixed(0) + ' KB';
+        $s1RetHi.className = 'val ' + (retHi > 64 ? 'fail' : 'pass');
+
+        const scavPct = s1MaxScav_v > 0
+            ? Math.min(100, (minorHi / s1MaxScav_v) * 50)
+            : (minorHi > 0 ? 100 : 0);
+        const retPct = Math.min(100, (retHi / 64) * 50);
+        $s1MinorBar.style.setProperty('--w', scavPct + '%');
+        $s1MinorBar.className = 'fill' + (minorHi > s1MaxScav_v ? ' fail' : '');
+        $s1RetBar.style.setProperty('--w', retPct + '%');
+        $s1RetBar.className = 'fill' + (retHi > 64 ? ' fail' : '');
+
+        if (v.pass) {
+            $s1Reasons.hidden = true;
+        } else {
+            $s1Reasons.hidden = false;
+            let rHtml = '';
+            for (let i = 0; i < v.reasons.length; i++) rHtml += '<li>' + v.reasons[i] + '</li>';
+            $s1ReasonsList.innerHTML = rHtml;
+        }
+    }
+
+    function s1UpdateCal() {
+        const kN = s1K_v * s1N_v;
+        $s1CalN.textContent = fmtK(s1N_v);
+        $s1CalKN.textContent = fmtK(kN);
+        $s1CalTh.textContent = String(s1MaxScav_v);
+        $s1Range.textContent = 'scavenges vs iterations, 0 to ' + fmtK(kN);
+        $s1NVal.textContent = fmtK(s1N_v);
+        $s1KVal.textContent = String(s1K_v);
+        $s1MaxScavVal.textContent = String(s1MaxScav_v);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Scene 2 -- detector controls
+    // ---------------------------------------------------------------------------
+
+    let s2Semi_v = +$s2Semi.value;
+    let s2N_v = +$s2N.value;
+    let s2K_v = +$s2K.value;
+    let s2MaxScav_v = +$s2MaxScav.value;
+
+    function s2UpdateVerdict() {
+        const kN = s2K_v * s2N_v;
+        const posHi = scavengesAt(SCENARIOS[POS_CONTROL_IDX], kN, s2Semi_v);
+        const negHi = scavengesAt(SCENARIOS[NEG_CONTROL_IDX], kN, s2Semi_v);
+        const posOk = posHi > (s2MaxScav_v + 3);
+        const negOk = negHi <= s2MaxScav_v;
+        const ok = posOk && negOk;
+
+        $s2PosCount.textContent = String(posHi);
+        $s2NegCount.textContent = String(negHi);
+        $s2Led.className = 'led ' + (ok ? 'on' : 'off');
+        $s2LedText.textContent = ok ? 'DETECTOR: VALIDATED' : 'DETECTOR: BROKEN';
+        $s2Badge.className = 'badge ' + (ok ? 'pass' : 'fail');
+        $s2Badge.textContent = ok ? 'READY' : (posOk ? 'FLAGS?' : 'SEMI TOO BIG');
+        $s2SemiVal.textContent = String(s2Semi_v);
+        $s2NVal.textContent = fmtK(s2N_v);
+        $s2KVal.textContent = String(s2K_v);
+        $s2MaxScavVal.textContent = String(s2MaxScav_v);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Scene 3 -- counters
+    // ---------------------------------------------------------------------------
+
+    let s3SelIdx = 4;    // start on "growing pool" -- the whole point of scene 3
+    let s3PgMax_v = +$s3PgMax.value;
+    let s3TaMax_v = +$s3TaMax.value;
+
+    function s3BuildChips() {
+        let html = '';
+        for (let i = 0; i < SCENARIOS.length; i++) {
+            const sc = SCENARIOS[i];
+            const hasCtr = sc.counters !== null;
+            const cls = sc.kind === 'sneaky' ? 'violet' : sc.kind === 'fail' ? 'fail' : '';
+            const btnCls = (i === s3SelIdx ? 'active ' : '') + (hasCtr ? '' : 'dim');
+            html += '<button data-idx="' + i + '"' +
+                (btnCls ? ' class="' + btnCls.trim() + '"' : '') +
+                '><span class="dot ' + cls + '"></span>' + sc.short + '</button>';
+        }
+        $s3Chips.innerHTML = html;
+    }
+
+    function s3UpdateVerdict() {
+        const sc = SCENARIOS[s3SelIdx];
+        const N = 200000, k = 8;
+        const kN = k * N;
+        const counterCaps = {poolGrowths: s3PgMax_v, totalAllocations: s3TaMax_v};
+        const v = verdictOf(sc, N, k, SEMI_SPACE_KB_DEFAULT, 2, 64, counterCaps);
+        const minorHi = scavengesAt(sc, kN, SEMI_SPACE_KB_DEFAULT);
+        const retHi = retainedKBAt(sc, kN);
+
+        $s3Name.textContent = sc.name;
+        $s3Scav.textContent = String(minorHi) + ' at kN';
+        $s3Ret.textContent = retHi.toFixed(0) + ' KB';
+        $s3VName.textContent = sc.name;
+        $s3VBadge.className = 'badge ' + (v.pass ? 'pass' : 'fail');
+        $s3VBadge.textContent = v.pass ? 'PASS' : 'FAIL';
+
+        $s3MScav.textContent = minorHi + ' / 2';
+        $s3MScav.className = 'val ' + (minorHi > 2 ? 'fail' : 'pass');
+        $s3MRet.textContent = retHi.toFixed(0) + ' / 64 KB';
+        $s3MRet.className = 'val ' + (retHi > 64 ? 'fail' : 'pass');
+
+        let cHtml = '';
+        let counterFailCount = 0;
+        if (sc.counters) {
+            for (const key in sc.counters) {
+                const actual = sc.counters[key](kN);
+                const cap = counterCaps[key] !== undefined ? counterCaps[key] : 0;
+                const failed = actual > cap;
+                if (failed) counterFailCount++;
+                const pct = cap === 0
+                    ? (actual > 0 ? 100 : 0)
+                    : Math.min(100, (actual / cap) * 50);
+                const fillCls = failed ? 'fail' : (actual > 0 ? 'warn' : '');
+                cHtml += '<div class="cbar-row">' +
+                    '<span class="name">' + key + '</span>' +
+                    '<span class="track"><span class="fill ' + fillCls + '" style="--w:' + pct + '%"></span></span>' +
+                    '<span class="val ' + (failed ? 'fail' : 'pass') + '">' + actual + ' / ' + cap + '</span>' +
+                    '</div>';
+            }
+        } else {
+            cHtml = '<div class="cbar-empty">no <code>statsOf</code> on this scenario</div>';
+        }
+        $s3Counters.innerHTML = cHtml;
+        $s3MCtr.textContent = counterFailCount === 0 ? 'none' : (counterFailCount + ' over cap');
+        $s3MCtr.className = 'val ' + (counterFailCount > 0 ? 'fail' : 'pass');
+
+        $s3PgMaxVal.textContent = String(s3PgMax_v);
+        $s3TaMaxVal.textContent = String(s3TaMax_v);
+
+        if (v.pass) {
+            $s3Reasons.hidden = true;
+        } else {
+            $s3Reasons.hidden = false;
+            let rHtml = '';
+            for (let i = 0; i < v.reasons.length; i++) rHtml += '<li>' + v.reasons[i] + '</li>';
+            $s3ReasonsList.innerHTML = rHtml;
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // rAF sweep loop -- continuous phosphor sweep across the active scene.
+    // Zero-alloc: no closures per frame, all state module-scope, canvas ops only.
+    // ---------------------------------------------------------------------------
+
+    const SWEEP_MS = 2200;
+    let activeScene = 'scope';
+    let loopStart = performance.now();
+    let lastStage = -1;
+
+    function loop(now) {
+        const elapsed = now - loopStart;
+        const cyc = (elapsed % SWEEP_MS) / SWEEP_MS;
+        // reveal 0..1 rising, hold at 1.0 for ~15% before wrapping
+        const reveal = cyc < 0.85 ? (cyc / 0.85) : 1.0;
+
+        if (activeScene === 'scope') {
+            const sc = SCENARIOS[s1SelIdx];
+            drawScope($s1Scope, sc, s1N_v, s1K_v, SEMI_SPACE_KB_DEFAULT, s1MaxScav_v, reveal, true);
+            drawRetained($s1Retained, sc, s1N_v, s1K_v, reveal);
+            $s1CalCeil.textContent = String(Math.max(4,
+                scavengesAt(SCENARIOS[POS_CONTROL_IDX], s1K_v * s1N_v, SEMI_SPACE_KB_DEFAULT)));
+
+            // pipeline: highlight measure@N until reveal crosses N mark, then measure@kN
+            const nMark = 1 / s1K_v;
+            const stage = reveal < nMark ? 0 : reveal < 1 ? 1 : 2;
+            if (stage !== lastStage) {
+                lastStage = stage;
+                $s1FlowMeas.classList.toggle('active', stage === 0);
+                $s1FlowMeasL.classList.toggle('active', stage === 0);
+                $s1FlowMeasK.classList.toggle('active', stage >= 1);
+                $s1FlowMeasKL.classList.toggle('active', stage >= 1);
+                $s1FlowE1.classList.toggle('active', stage >= 1);
+            }
+        } else if (activeScene === 'detector') {
+            drawScope($s2PosScope, SCENARIOS[POS_CONTROL_IDX], s2N_v, s2K_v, s2Semi_v, s2MaxScav_v, reveal, false);
+            drawScope($s2NegScope, SCENARIOS[NEG_CONTROL_IDX], s2N_v, s2K_v, s2Semi_v, s2MaxScav_v, reveal, false);
+        } else {
+            const sc = SCENARIOS[s3SelIdx];
+            drawScope($s3Scope, sc, 200000, 8, SEMI_SPACE_KB_DEFAULT, 2, reveal, true);
+        }
+
+        requestAnimationFrame(loop);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Wiring
+    // ---------------------------------------------------------------------------
+
+    $tabs.addEventListener('click', (ev) => {
+        const btn = ev.target.closest('button[data-scene]');
+        if (!btn) return;
+        activeScene = btn.dataset.scene;
+        loopStart = performance.now();
+        const tabButtons = $tabs.querySelectorAll('button');
+        for (let i = 0; i < tabButtons.length; i++) {
+            tabButtons[i].classList.toggle('active', tabButtons[i] === btn);
+        }
+        for (let i = 0; i < $scenes.length; i++) {
+            $scenes[i].classList.toggle('active', $scenes[i].dataset.scene === activeScene);
+        }
+        // On mobile the newly-shown canvases have zero size until reflow -- refit.
+        fitAll();
+    });
+
+    $s1Chips.addEventListener('click', (ev) => {
+        const btn = ev.target.closest('button[data-idx]');
+        if (!btn) return;
+        s1SelIdx = +btn.dataset.idx;
+        s1BuildChips();
+        s1UpdateVerdict();
+        loopStart = performance.now();
+    });
+    $s1N.addEventListener('input', () => {
+        s1N_v = +$s1N.value;
+        s1UpdateCal();
+        s1UpdateVerdict();
+        loopStart = performance.now();
+    });
+    $s1K.addEventListener('input', () => {
+        s1K_v = +$s1K.value;
+        s1UpdateCal();
+        s1UpdateVerdict();
+        loopStart = performance.now();
+    });
+    $s1MaxScav.addEventListener('input', () => {
+        s1MaxScav_v = +$s1MaxScav.value;
+        s1UpdateCal();
+        s1UpdateVerdict();
+    });
+
+    $s2Semi.addEventListener('input', () => {
+        s2Semi_v = +$s2Semi.value;
+        s2UpdateVerdict();
+        loopStart = performance.now();
+    });
+    $s2N.addEventListener('input', () => {
+        s2N_v = +$s2N.value;
+        s2UpdateVerdict();
+        loopStart = performance.now();
+    });
+    $s2K.addEventListener('input', () => {
+        s2K_v = +$s2K.value;
+        s2UpdateVerdict();
+        loopStart = performance.now();
+    });
+    $s2MaxScav.addEventListener('input', () => {
+        s2MaxScav_v = +$s2MaxScav.value;
+        s2UpdateVerdict();
+    });
+
+    $s3Chips.addEventListener('click', (ev) => {
+        const btn = ev.target.closest('button[data-idx]');
+        if (!btn) return;
+        s3SelIdx = +btn.dataset.idx;
+        s3BuildChips();
+        s3UpdateVerdict();
+        loopStart = performance.now();
+    });
+    $s3PgMax.addEventListener('input', () => {
+        s3PgMax_v = +$s3PgMax.value;
+        s3UpdateVerdict();
+    });
+    $s3TaMax.addEventListener('input', () => {
+        s3TaMax_v = +$s3TaMax.value;
+        s3UpdateVerdict();
+    });
+
+    function fitAll() {
+        fitCanvas($s1Scope);
+        fitCanvas($s1Retained);
+        fitCanvas($s2PosScope);
+        fitCanvas($s2NegScope);
+        fitCanvas($s3Scope);
+    }
+
+    window.addEventListener('resize', fitAll);
+
+    // Init
+    fitAll();
+    s1BuildChips();
+    s1UpdateCal();
+    s1UpdateVerdict();
+    s2UpdateVerdict();
+    s3BuildChips();
+    s3UpdateVerdict();
+    requestAnimationFrame(loop);
+</script>
+</body>
+</html>
