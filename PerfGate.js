@@ -48,33 +48,53 @@ function makeGcCounter() {
     };
 }
 
-function gc2() {
+async function gc2() {
     if (typeof globalThis.gc === 'function') {
         globalThis.gc();
+        // Yield one task tick so any FinalizationRegistry cleanup callbacks
+        // registered from the first gc() get a chance to run before the
+        // second pass. Without this, WeakRef/FinalizationRegistry-driven
+        // teardown (used across the ecosystem in lite-cleanup / lite-observe
+        // / lite-floating) can leave the heap in an intermediate state
+        // between the two collections, inflating the retained delta.
+        await new Promise(function (r) { setImmediate(r); });
         globalThis.gc();
     }
+}
+
+// Default post-hot sleep before reading the GC observer buffer. The Node
+// perf_hooks 'gc' entries are delivered asynchronously, so we need to yield
+// long enough for the observer callback to fire. 100ms is a safe floor on
+// most systems; noisy CI runners (shared GitHub Actions, Docker under
+// contention) can stall the event loop for tens of milliseconds and drop
+// entries with a shorter wait. Override per-measurement via the `flushMs`
+// option, or globally via the PERF_GATE_FLUSH_MS environment variable.
+var DEFAULT_FLUSH_MS = 100;
+if (typeof process !== 'undefined' && process.env && process.env.PERF_GATE_FLUSH_MS) {
+    var envMs = parseInt(process.env.PERF_GATE_FLUSH_MS, 10);
+    if (envMs > 0 && envMs < 60000) DEFAULT_FLUSH_MS = envMs;
 }
 
 // ---------------------------------------------------------------------------
 // Core measurement
 // ---------------------------------------------------------------------------
 
-async function meterOnce(scenario, iters) {
+async function meterOnce(scenario, iters, flushMs) {
     const state = scenario.setup();
     scenario.hot(state, Math.min(iters, 20000));
-    gc2();
+    await gc2();
 
     const statsBefore = scenario.statsOf ? scenario.statsOf(state) : null;
     const heapBefore = process.memoryUsage().heapUsed;
 
     const gcc = makeGcCounter();
     scenario.hot(state, iters);
-    await sleep(40);
+    await sleep(flushMs);
     const minor = gcc.c.minor;
     const major = gcc.c.major;
     gcc.close();
 
-    gc2();
+    await gc2();
     const heapAfter = process.memoryUsage().heapUsed;
     const statsAfter = scenario.statsOf ? scenario.statsOf(state) : null;
     if (scenario.teardown) scenario.teardown(state);
@@ -114,14 +134,19 @@ async function meterOnce(scenario, iters) {
  * allocation via scavenge scaling.
  *
  * @param {Scenario} scenario
- * @param {{ N?: number, k?: number }} [options]
+ * @param {{ N?: number, k?: number, flushMs?: number }} [options]
+ *   flushMs: how long to wait after the hot loop before reading the GC
+ *   observer buffer. Default 100ms (or PERF_GATE_FLUSH_MS env var).
+ *   Bump if you see zero scavenges on scenarios that should allocate --
+ *   noisy CI runners may need 250-500ms.
  * @returns {Promise<MeasureResult>}
  */
 export async function measure(scenario, options) {
     const N = (options && options.N) || 200000;
     const k = (options && options.k) || 8;
-    const lo = await meterOnce(scenario, N);
-    const hi = await meterOnce(scenario, k * N);
+    const flushMs = (options && options.flushMs) || DEFAULT_FLUSH_MS;
+    const lo = await meterOnce(scenario, N, flushMs);
+    const hi = await meterOnce(scenario, k * N, flushMs);
     return {
         name: scenario.name, N: N, k: k,
         minorLo: lo.minor, minorHi: hi.minor,
@@ -264,7 +289,7 @@ export function formatResult(r) {
  */
 export function zgcSuite(config) {
     const scenarios = config.scenarios;
-    const opts = {N: config.N || 200000, k: config.k || 8};
+    const opts = {N: config.N || 200000, k: config.k || 8, flushMs: config.flushMs};
     const thresholds = {
         maxScavenges: config.maxScavenges !== undefined ? config.maxScavenges : 2,
         maxRetainedKB: config.maxRetainedKB !== undefined ? config.maxRetainedKB : 64,
@@ -327,7 +352,7 @@ export function zgcSuite(config) {
  */
 export async function runGate(config) {
     const scenarios = config.scenarios;
-    const opts = {N: config.N || 200000, k: config.k || 8};
+    const opts = {N: config.N || 200000, k: config.k || 8, flushMs: config.flushMs};
     const thresholds = {
         maxScavenges: config.maxScavenges !== undefined ? config.maxScavenges : 2,
         maxRetainedKB: config.maxRetainedKB !== undefined ? config.maxRetainedKB : 64,

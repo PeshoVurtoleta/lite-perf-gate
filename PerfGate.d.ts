@@ -79,6 +79,12 @@ export interface GateConfig {
     negativeControl?: Scenario;
     /** Scenarios that MUST trip the gate (injected allocation self-tests). */
     mustFail?: Scenario[];
+    /**
+     * Wait (ms) after the hot loop before reading the GC observer buffer.
+     * Default 100 (or PERF_GATE_FLUSH_MS env var). Bump to 250-500 on
+     * noisy CI runners where event-loop stalls > 100ms may drop entries.
+     */
+    flushMs?: number;
 }
 
 export interface GateResult {
@@ -91,7 +97,7 @@ export interface GateResult {
  */
 export function measure(
     scenario: Scenario,
-    options?: { N?: number; k?: number }
+    options?: { N?: number; k?: number; flushMs?: number }
 ): Promise<MeasureResult>;
 
 /**

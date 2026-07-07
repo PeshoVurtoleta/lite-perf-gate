@@ -21,8 +21,9 @@ zgcSuite(config) -- register node:test cases.
   config.counters: Record<string, number>  -- per-counter max delta.
   config.mustFail: Scenario[]    -- must trip the gate (self-test).
   config.N: number (default 200000), config.k: number (default 8).
+  config.flushMs: number (default 100, or PERF_GATE_FLUSH_MS env var).
 
-measure(scenario, {N, k}) -- raw MeasureResult.
+measure(scenario, {N, k, flushMs}) -- raw MeasureResult.
 verdict(result, thresholds) -- { pass: boolean, reasons: string[] }.
 runGate(config) -- standalone report, same config as zgcSuite.
 
@@ -38,6 +39,19 @@ statsOf returns numeric counters; deltas are computed automatically.
 node --expose-gc --max-semi-space-size=4 --test your.test.mjs
 
 --expose-gc is required. --max-semi-space-size=4 sharpens sensitivity.
+
+## CI tuning
+
+perf_hooks delivers GC entries asynchronously. Default 100ms wait after
+hot loop is safe on dev machines but can be marginal on saturated CI
+runners. If scenarios that should allocate report zero scavenges, bump
+flushMs (via option) or PERF_GATE_FLUSH_MS env var to 250-500ms.
+
+gc2() yields a setImmediate tick between its two gc() calls so any
+FinalizationRegistry cleanups scheduled by the first run before the
+second. Essential for ecosystems using WeakRef/FinalizationRegistry
+(lite-cleanup / lite-observe / lite-floating) -- without it the two-pass
+GC can leave the heap in an intermediate state and inflate retained deltas.
 
 ## Why scavenge counting
 

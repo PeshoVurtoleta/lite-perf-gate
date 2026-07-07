@@ -134,6 +134,18 @@ Two V8 gotchas the controls handle:
 
 The default V8 semi-space is 16MB. At 200k iterations of 64-byte objects, you produce ~12MB -- possibly fitting without a single scavenge. `--max-semi-space-size=4` shrinks the young generation to 4MB, forcing scavenges on smaller cumulative allocation and sharpening sensitivity. The four-field positive control (`{x,y,z,w}`) provides margin even without this flag, but the flag is recommended for production gates.
 
+## CI tuning
+
+Node's `perf_hooks` delivers GC entries to the observer asynchronously. After the hot loop the harness waits before reading the entry count so the observer has time to flush. Default wait is **100ms**, which is safe on a dev machine but can be marginal on saturated CI runners.
+
+If you see intermittent zero-scavenge reports on scenarios that clearly allocate:
+
+- Bump globally via env var: `PERF_GATE_FLUSH_MS=300 node --test ...`
+- Per-suite: `zgcSuite({ scenarios, flushMs: 300 })`
+- Per-call: `measure(scenario, { flushMs: 500 })`
+
+`gc2()` (the harness's forced-collection helper) does one `gc()`, yields a `setImmediate` tick to let `FinalizationRegistry` cleanups run, then does a second `gc()`. Without the yield, WeakRef/finalizer-driven teardown (used across the ecosystem in `lite-cleanup`, `lite-observe`, `lite-floating`) can leave the heap in an intermediate state between the two collections and inflate the retained-heap delta.
+
 ## License
 
 MIT (c) Zahary Shinikchiev

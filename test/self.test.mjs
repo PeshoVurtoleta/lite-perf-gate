@@ -150,3 +150,13 @@ test('measure computes counter deltas from statsOf', async function () {
     assert.equal(typeof r.counters_hi.allocs, 'number');
     assert.ok(r.counters_hi.allocs >= 2000, 'expected ~k*N counter delta');
 });
+
+test('flushMs option is honored (short value still measures correctly on local runs)', async function () {
+    // Verifies the option plumbs through measure() -> meterOnce() and the
+    // observer still catches scavenges on a fast machine even with a
+    // trimmed wait. CI runners may need the default 100ms floor -- this
+    // test uses a permissive threshold so it doesn't flake on slow CI.
+    const r = await measure(controlPositive, { N: 100000, k: 4, flushMs: 20 });
+    _controlKeepAlive();
+    assert.ok(r.minorHi > 0, 'flushMs still allows observer to catch some entries locally');
+});
