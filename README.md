@@ -24,6 +24,44 @@ npm install @zakkster/lite-perf-gate
 
 Scavenge-counting is the only reliable detector of transient allocation. This library packages the methodology into a `node:test`-native harness that validates its own detector on every run.
 
+
+## suiteGate -- SPP stream-fed budgets (v1.1)
+
+Gate live probe streams, not just measured scenarios. `suiteGate()` reads
+SPP records (a `Float64Array` slab or any `forEach(cb(packed, t, a, b))`
+source -- a `@zakkster/lite-scope` memory sink qualifies), reduces each
+budget's metric, and delegates every comparison to `verdict()`:
+
+```js
+import { suiteGate, toNDJSON } from '@zakkster/lite-perf-gate';
+
+const gate = suiteGate({
+    name: 'ci-gate',
+    source: sink.toSlab(),          // or the sink itself (forEach source)
+    budgets: [
+        { name: 'gc.pause.max', stream: 2, op: 0x0201, slot: 'a', reduce: 'max',   max: 8 },
+        { name: 'leak.orphans',            op: 0x0801,            reduce: 'count', max: 0 },
+        { name: 'inp.worst',               op: 0x0601, slot: 'a', reduce: 'max',   max: 200 }
+    ]
+});
+
+process.stdout.write(toNDJSON(gate, { pkg: 'my-lib', run: process.env.CI_RUN }));
+if (!gate.pass) process.exitCode = 1;   // exit codes stay in YOUR runner
+```
+
+No package coupling: lite-perf-gate speaks the Scope Probe Protocol
+(SPP v1, `PROTOCOL.md` in lite-scope) and never imports lite-scope.
+CONT continuation records are never budget targets (base-record slots
+only in v1.1). `suiteGate` returns structured per-budget verdicts and
+leaves exit codes to the runner layer.
+
+## toNDJSON -- CI artifacts (v1.2)
+
+One JSON object per line: `budget` lines, then the `suite-gate` summary;
+`measure()` results serialize as `measure` lines. Optional `meta` fields
+(package, run id, versions) merge into every line. Pipe to a file in your
+gate script and attach it as a CI artifact.
+
 ## Quick start
 
 ```js

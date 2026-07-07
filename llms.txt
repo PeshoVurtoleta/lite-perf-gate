@@ -63,3 +63,14 @@ is the only reliable detector of transient allocation in V8.
 
 Single-file ESM. Imports only node:perf_hooks, node:timers/promises,
 node:test, node:assert/strict.
+
+v1.1 suiteGate(config): SPP stream-fed budgets. config.source = Float64Array
+slab or { forEach(cb(packed,t,a,b)) } (lite-scope memory sink). budgets[] =
+{ name, packed? | stream?+op | op, slot: t|a|b (default a), reduce:
+count|sum|max|mean|last (default max), max }. Delegates every comparison to
+verdict(); returns { name, pass, reasons, budgets: [{name, value, count,
+max, pass, reasons}] }. Never sets exit codes; CONT records (op 0x0F01) are
+never budget targets. No lite-scope import: coupled by SPP v1 protocol only.
+v1.2 toNDJSON(x, meta?): NDJSON for CI artifacts; accepts suiteGate result,
+measure result, or array; budget lines then suite-gate summary; meta merged
+per line; trailing newline.

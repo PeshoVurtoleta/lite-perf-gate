@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.2.0] - 2026-07-07
+
+- **`toNDJSON(x, meta?)`** -- NDJSON verdict output for CI artifacts.
+  Accepts a `suiteGate()` result, a `measure()` result, or an array of
+  either; emits `budget` lines before their `suite-gate` summary line and
+  `measure` lines, with optional per-run `meta` fields merged into every
+  line. Otherwise the API is frozen, per the suite roadmap.
+
+## [1.1.0] - 2026-07-07
+
+- **`suiteGate(config)`** -- SPP stream-fed budgets. Consumes a Float64Array
+  slab or any forEach record source (a lite-scope memory sink qualifies),
+  reduces per-budget metrics (count/sum/max/mean/last over slot t/a/b,
+  matched by packed header, stream+op, or op-only), and delegates every
+  threshold comparison to `verdict()` -- one comparison authority,
+  per-budget structured results. No package import: lite-perf-gate speaks
+  the Scope Probe Protocol (SPP v1), it does not depend on lite-scope.
+  suiteGate never touches process exit codes; runner semantics (0/1/3 in
+  the VersionMatrix scripts, 0/1/2 in `runGate`) stay in the runner layer.
+  CONT continuation records are never budget targets in v1.1.
+- **Version discipline fix**: `VERSION` now reads `1.2.0` and the self-test
+  asserts it against `package.json` (the published 1.0.1 tarball shipped
+  `VERSION = '1.0.0'` because the old test pinned a literal instead of the
+  manifest -- that class of slip is now structurally impossible).
+
 ## [1.0.0] - 2026-07-07
 
 Initial release. Generalized from the `@zakkster/lite-signal` zero-GC gate

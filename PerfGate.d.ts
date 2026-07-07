@@ -129,3 +129,67 @@ export function runGate(config: GateConfig): Promise<GateResult>;
 
 /** @internal */
 export function _controlKeepAlive(): number;
+
+// ---------------------------------------------------------------------------
+// suiteGate (v1.1) + toNDJSON (v1.2)
+// ---------------------------------------------------------------------------
+
+/** forEach-style SPP record source (e.g. a lite-scope memory sink). */
+export interface SppRecordSource {
+    forEach(cb: (packed: number, t: number, a: number, b: number) => void): void;
+}
+
+export interface SuiteBudget {
+    name: string;
+    /** Exact packed header (streamId << 16 | opcode). */
+    packed?: number;
+    /** Stream id; combine with op for an exact match. */
+    stream?: number;
+    /** Opcode; alone it matches the op on any stream. */
+    op?: number;
+    /** Record slot to read. Default 'a'. */
+    slot?: 't' | 'a' | 'b';
+    /** Reduction over matching records. Default 'max'. */
+    reduce?: 'count' | 'sum' | 'max' | 'mean' | 'last';
+    /** Inclusive budget: verdict() flags value > max. */
+    max: number;
+}
+
+export interface SuiteBudgetResult {
+    name: string;
+    value: number;
+    count: number;
+    max: number;
+    pass: boolean;
+    reasons: string[];
+}
+
+export interface SuiteGateResult {
+    name: string;
+    pass: boolean;
+    reasons: string[];
+    budgets: SuiteBudgetResult[];
+}
+
+/**
+ * Evaluate SPP stream records against numeric budgets. Pure reduction with
+ * per-budget delegation to verdict(); no measurement, no process exit
+ * codes, no record emission. Wide-record CONT payloads are not budget
+ * targets in v1.1 (base-record t/a/b slots only).
+ */
+export function suiteGate(config: {
+    source: Float64Array | SppRecordSource;
+    budgets: SuiteBudget[];
+    name?: string;
+}): SuiteGateResult;
+
+/**
+ * Serialize suiteGate() and/or measure() results as NDJSON for CI
+ * artifacts: one JSON object per line, budget lines before their
+ * suite-gate summary, trailing newline. `meta` fields merge into every
+ * line; core fields win on collision.
+ */
+export function toNDJSON(
+    x: SuiteGateResult | MeasureResult | Array<SuiteGateResult | MeasureResult>,
+    meta?: Record<string, unknown>
+): string;

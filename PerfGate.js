@@ -17,7 +17,7 @@
  * MIT License
  */
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.2.0';
 
 import {PerformanceObserver, constants} from 'node:perf_hooks';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -427,4 +427,231 @@ export async function runGate(config) {
         console.log('\nZERO-GC GATE: FAIL \u2014 ' + why.join('; '));
     }
     return {passed: passed, results: results};
+}
+
+// ---------------------------------------------------------------------------
+// suiteGate -- SPP stream-fed budgets (v1.1)
+// ---------------------------------------------------------------------------
+// lite-perf-gate does NOT import @zakkster/lite-scope. Probes, gates, and
+// consumers are coupled by the Scope Probe Protocol (SPP v1 -- PROTOCOL.md
+// in lite-scope), never by packages. The two protocol facts used here:
+//   - a record is 4 numbers [packed, t, a, b], where
+//     packed = (streamId << 16 | opcode) >>> 0, both u16;
+//   - opcode 0x0F01 (CONT) is a wide-record continuation and is never a
+//     budget target. Budgets therefore see the base record's t/a/b slots;
+//     extended CONT payload slots are out of scope for v1.1 (a lite-scope
+//     side bridge can pre-reduce wide records if that ever gates).
+// suiteGate never touches process exit codes: runner semantics (0 pass /
+// 1 regression / 3 recapture in the VersionMatrix scripts, 0/1/2 in
+// runGate) stay in the runner layer. All threshold comparison is delegated
+// to verdict() -- one comparison authority, per-budget.
+
+var SPP_OP_CONT = 0x0F01;
+
+var SUITE_REDUCES = {count: 1, sum: 1, max: 1, mean: 1, last: 1};
+var SUITE_SLOTS = {t: 1, a: 2, b: 3};
+
+function suiteMatcher(b, i) {
+    if (b.packed !== undefined) {
+        if (!Number.isInteger(b.packed) || b.packed < 0 || b.packed > 0xFFFFFFFF) {
+            throw new RangeError('suiteGate: budget[' + i + '] packed must be a u32');
+        }
+        return {exact: b.packed >>> 0, op: -1};
+    }
+    if (b.op === undefined || !Number.isInteger(b.op) || b.op < 0 || b.op > 0xFFFF) {
+        throw new RangeError('suiteGate: budget[' + i + '] needs a u16 op (with optional stream), or packed');
+    }
+    if (b.stream !== undefined) {
+        if (!Number.isInteger(b.stream) || b.stream < 0 || b.stream > 0xFFFF) {
+            throw new RangeError('suiteGate: budget[' + i + '] stream must be a u16');
+        }
+        return {exact: ((b.stream << 16) | b.op) >>> 0, op: -1};
+    }
+    return {exact: -1, op: b.op}; // op-only: matches the op on any stream
+}
+
+/**
+ * Evaluate SPP stream records against numeric budgets. Pure reduction plus
+ * per-budget delegation to verdict(); no measurement, no exit codes, no
+ * record emission (callers bridge verdicts to GATE_VERDICT meta records).
+ *
+ * @param {object} config
+ * @param {Float64Array | { forEach: (cb: (packed: number, t: number, a: number, b: number) => void) => void }} config.source
+ *   A contiguous SPP slab (length divisible by 4) or any forEach-style
+ *   record source (e.g. a lite-scope memory sink).
+ * @param {Array<{
+ *   name: string,
+ *   packed?: number, stream?: number, op?: number,
+ *   slot?: 't' | 'a' | 'b',
+ *   reduce?: 'count' | 'sum' | 'max' | 'mean' | 'last',
+ *   max: number
+ * }>} config.budgets
+ *   slot defaults to 'a', reduce to 'max'. Budgets that match zero records
+ *   reduce to 0 (count 0 is reported so callers can tell silence from luck).
+ * @param {string} [config.name='suite-gate']
+ * @returns {{
+ *   name: string, pass: boolean, reasons: string[],
+ *   budgets: Array<{ name: string, value: number, count: number, max: number, pass: boolean, reasons: string[] }>
+ * }}
+ */
+export function suiteGate(config) {
+    if (!config || typeof config !== 'object') {
+        throw new TypeError('suiteGate: expects a config object');
+    }
+    const source = config.source;
+    const budgets = config.budgets;
+    if (!Array.isArray(budgets) || budgets.length === 0) {
+        throw new TypeError('suiteGate: budgets must be a non-empty array');
+    }
+
+    const n = budgets.length;
+    const match = new Array(n);
+    const slot = new Array(n);
+    const reduce = new Array(n);
+    const seen = {};
+    for (let i = 0; i < n; i++) {
+        const b = budgets[i];
+        if (!b || typeof b.name !== 'string' || b.name.length === 0) {
+            throw new TypeError('suiteGate: budget[' + i + '] needs a non-empty name');
+        }
+        if (seen[b.name]) throw new RangeError('suiteGate: duplicate budget name "' + b.name + '"');
+        seen[b.name] = 1;
+        if (typeof b.max !== 'number' || !isFinite(b.max)) {
+            throw new RangeError('suiteGate: budget "' + b.name + '" needs a finite numeric max');
+        }
+        const sl = b.slot === undefined ? 'a' : b.slot;
+        if (SUITE_SLOTS[sl] === undefined) {
+            throw new RangeError('suiteGate: budget "' + b.name + '" slot must be t, a, or b');
+        }
+        const rd = b.reduce === undefined ? 'max' : b.reduce;
+        if (SUITE_REDUCES[rd] === undefined) {
+            throw new RangeError('suiteGate: budget "' + b.name + '" reduce must be count, sum, max, mean, or last');
+        }
+        match[i] = suiteMatcher(b, i);
+        slot[i] = SUITE_SLOTS[sl];
+        reduce[i] = rd;
+    }
+
+    const count = new Float64Array(n);
+    const sum = new Float64Array(n);
+    const maxv = new Float64Array(n);
+    const last = new Float64Array(n);
+    maxv.fill(-Infinity);
+
+    function visit(packed, t, a, b) {
+        const op = packed & 0xFFFF;
+        if (op === SPP_OP_CONT) return;
+        for (let i = 0; i < n; i++) {
+            const m = match[i];
+            if (m.exact >= 0 ? (packed >>> 0) !== m.exact : op !== m.op) continue;
+            const val = slot[i] === 1 ? t : slot[i] === 2 ? a : b;
+            count[i] += 1;
+            sum[i] += val;
+            if (val > maxv[i]) maxv[i] = val;
+            last[i] = val;
+        }
+    }
+
+    if (source && typeof source.forEach === 'function' && !(source instanceof Float64Array)) {
+        source.forEach(visit);
+    } else if (source instanceof Float64Array) {
+        if (source.length % 4 !== 0) {
+            throw new RangeError('suiteGate: slab length must be divisible by 4');
+        }
+        for (let r = 0; r < source.length; r += 4) {
+            visit(source[r], source[r + 1], source[r + 2], source[r + 3]);
+        }
+    } else {
+        throw new TypeError('suiteGate: source must be a Float64Array slab or a forEach record source');
+    }
+
+    const perBudget = [];
+    const reasons = [];
+    let pass = true;
+    for (let i = 0; i < n; i++) {
+        const b = budgets[i];
+        let value;
+        if (reduce[i] === 'count') value = count[i];
+        else if (reduce[i] === 'sum') value = sum[i];
+        else if (reduce[i] === 'max') value = count[i] > 0 ? maxv[i] : 0;
+        else if (reduce[i] === 'mean') value = count[i] > 0 ? sum[i] / count[i] : 0;
+        else value = count[i] > 0 ? last[i] : 0;
+
+        const counters = {};
+        counters[b.name] = value;
+        const ct = {};
+        ct[b.name] = b.max;
+        const v = verdict(
+            {name: b.name, minorHi: 0, majorHi: 0, retainedKB_hi: 0, counters_hi: counters},
+            {counters: ct}
+        );
+        if (!v.pass) pass = false;
+        for (let ri = 0; ri < v.reasons.length; ri++) reasons.push(v.reasons[ri]);
+        perBudget.push({
+            name: b.name, value: value, count: count[i], max: b.max,
+            pass: v.pass, reasons: v.reasons
+        });
+    }
+
+    return {
+        name: typeof config.name === 'string' ? config.name : 'suite-gate',
+        pass: pass,
+        reasons: reasons,
+        budgets: perBudget
+    };
+}
+
+// ---------------------------------------------------------------------------
+// toNDJSON -- verdict output for CI artifacts (v1.2)
+// ---------------------------------------------------------------------------
+
+function ndjsonSuiteGate(r, meta, lines) {
+    for (let i = 0; i < r.budgets.length; i++) {
+        const b = r.budgets[i];
+        lines.push(JSON.stringify(Object.assign({}, meta, {
+            type: 'budget', gate: r.name, name: b.name,
+            value: b.value, count: b.count, max: b.max, pass: b.pass
+        })));
+    }
+    lines.push(JSON.stringify(Object.assign({}, meta, {
+        type: 'suite-gate', name: r.name, pass: r.pass, reasons: r.reasons
+    })));
+}
+
+function ndjsonMeasure(r, meta, lines) {
+    lines.push(JSON.stringify(Object.assign({}, meta, {
+        type: 'measure', name: r.name, N: r.N, k: r.k,
+        minorLo: r.minorLo, minorHi: r.minorHi,
+        majorLo: r.majorLo, majorHi: r.majorHi,
+        retainedKB_lo: r.retainedKB_lo, retainedKB_hi: r.retainedKB_hi,
+        counters_lo: r.counters_lo, counters_hi: r.counters_hi
+    })));
+}
+
+/**
+ * Serialize gate output as NDJSON for CI artifacts: one JSON object per
+ * line, budget lines before their suite-gate summary line, trailing
+ * newline. Accepts a suiteGate() result, a measure() result, or an array
+ * mixing both. `meta` fields (run id, package, version, ...) are merged
+ * into every line; core fields win on collision.
+ *
+ * @param {object | object[]} x
+ * @param {object} [meta]
+ * @returns {string}
+ */
+export function toNDJSON(x, meta) {
+    const rows = Array.isArray(x) ? x : [x];
+    const m = meta && typeof meta === 'object' ? meta : {};
+    const lines = [];
+    for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        if (r && Array.isArray(r.budgets) && typeof r.pass === 'boolean') {
+            ndjsonSuiteGate(r, m, lines);
+        } else if (r && typeof r.minorHi === 'number' && typeof r.N === 'number') {
+            ndjsonMeasure(r, m, lines);
+        } else {
+            throw new TypeError('toNDJSON: row ' + i + ' is neither a suiteGate result nor a measure result');
+        }
+    }
+    return lines.join('\n') + '\n';
 }
