@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-perf-gate",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
   "description": "Zero-GC and performance regression gate for node:test. Scavenge-counting, scaling verdict, detector self-validation. Proves your hot path allocates nothing -- or names what did.",
   "type": "module",
