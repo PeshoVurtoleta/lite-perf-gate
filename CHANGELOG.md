@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.2.2] - 2026-09-13
+
+- **Version truth**: `VERSION` reads `1.2.2` and agrees with
+  `package.json` and this file. The published 1.2.1 tarball shipped
+  `VERSION = '1.2.0'`; see the 1.2.1 entry below.
+- **`prepublishOnly: npm test`** -- the publish path now runs the suite.
+  The guard test caught the 1.2.1 slip locally; nothing forced it to run
+  before `npm publish`. That gap, not the string, was the defect.
+- **Self-test**: the VERSION test no longer pins a literal; it asserts
+  only `VERSION === package.json.version`. The literal forced a test edit
+  every release, which is the friction that got skipped.
+- Housekeeping: `var -> let/const` in `PerfGate.js`, trailing newline at
+  EOF restored, demo `<title>` version.
+- No API change and no behavior change to any exported function.
+
+## [1.2.1] - 2026-07-08
+
+Retroactive entry, written 2026-09-13: 1.2.1 was published with no
+changelog entry.
+
+- Housekeeping only: `var -> let/const` cleanup in `PerfGate.js` and the
+  `package.json` bump. Verified by unpacking the published tarball: no
+  API change and no behavior change relative to 1.2.0.
+- **Known defect, fixed in 1.2.2**: the tarball shipped
+  `export const VERSION = '1.2.0';` and a CHANGELOG ending at 1.2.0. The
+  self-test that asserts VERSION against the manifest would have caught
+  it; there was no `prepublishOnly` to make it run.
+
 ## [1.2.0] - 2026-07-07
 
 - **`toNDJSON(x, meta?)`** -- NDJSON verdict output for CI artifacts.
@@ -9,6 +37,10 @@
   line. Otherwise the API is frozen, per the suite roadmap.
 
 ## [1.1.0] - 2026-07-07
+
+> Never published standalone. The registry has 1.0.0, 1.0.1, 1.2.0,
+> 1.2.1 -- no 1.1.0. The features below first reached the registry
+> inside 1.2.0.
 
 - **`suiteGate(config)`** -- SPP stream-fed budgets. Consumes a Float64Array
   slab or any forEach record source (a lite-scope memory sink qualifies),

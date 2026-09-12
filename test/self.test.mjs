@@ -23,7 +23,6 @@ assert.ok(typeof globalThis.gc === 'function', 'run with --expose-gc');
 const OPTS = { N: 100000, k: 4 };
 
 test('VERSION matches package.json (triple bump)', function () {
-    assert.equal(VERSION, '1.2.0');
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
     assert.equal(pkg.version, VERSION);
 });
