@@ -57,7 +57,9 @@ async function gc2() {
         // teardown (used across the ecosystem in lite-cleanup / lite-observe
         // / lite-floating) can leave the heap in an intermediate state
         // between the two collections, inflating the retained delta.
-        await new Promise(function (r) { setImmediate(r); });
+        await new Promise(function (r) {
+            setImmediate(r);
+        });
         globalThis.gc();
     }
 }
@@ -69,9 +71,9 @@ async function gc2() {
 // contention) can stall the event loop for tens of milliseconds and drop
 // entries with a shorter wait. Override per-measurement via the `flushMs`
 // option, or globally via the PERF_GATE_FLUSH_MS environment variable.
-var DEFAULT_FLUSH_MS = 100;
+let DEFAULT_FLUSH_MS = 100;
 if (typeof process !== 'undefined' && process.env && process.env.PERF_GATE_FLUSH_MS) {
-    var envMs = parseInt(process.env.PERF_GATE_FLUSH_MS, 10);
+    const envMs = parseInt(process.env.PERF_GATE_FLUSH_MS, 10);
     if (envMs > 0 && envMs < 60000) DEFAULT_FLUSH_MS = envMs;
 }
 
@@ -446,10 +448,10 @@ export async function runGate(config) {
 // runGate) stay in the runner layer. All threshold comparison is delegated
 // to verdict() -- one comparison authority, per-budget.
 
-var SPP_OP_CONT = 0x0F01;
+const SPP_OP_CONT = 0x0F01;
 
-var SUITE_REDUCES = {count: 1, sum: 1, max: 1, mean: 1, last: 1};
-var SUITE_SLOTS = {t: 1, a: 2, b: 3};
+const SUITE_REDUCES = {count: 1, sum: 1, max: 1, mean: 1, last: 1};
+const SUITE_SLOTS = {t: 1, a: 2, b: 3};
 
 function suiteMatcher(b, i) {
     if (b.packed !== undefined) {
