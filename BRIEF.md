@@ -1,125 +1,120 @@
 ---
 package: "@zakkster/lite-perf-gate"
-version_target: 1.4.1
+version_target: 1.4.2
 status: in-progress
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
-peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak", "@zakkster/lite-arena", "@zakkster/lite-scope"]
-findings: []
-depends_on: [P3, P4]
-blocks: [P6, D1]
+peers: []
+findings: [PG-15, PG-16]
+depends_on: [P5]
+blocks: []
 ---
 
-# lite-perf-gate -- the cookbook the siblings already have (P5)
+# lite-perf-gate -- write the README the surface now deserves, once (P6)
 
 PURPOSE
-  lite-gc-profiler ships a 25-recipe COOKBOOK.md with runnable
-  examples/{react,vue,angular}.mjs and a template; lite-leak ships a
-  4-tier cookbook whose recipes are PINNED BY TEST
-  (test/cookbook.test.js, llms.txt: "19 recipes, 4 tiers, pinned ...
-  so recipes cannot rot"). lite-perf-gate -- the CI-facing member of
-  the trio -- has neither. The surface froze in P2-P4 (five signals,
-  fail-closed doors, minCount, GateResult.code, allowNoGc/allowEmpty,
-  controlLarge, dated residues); every recipe documents the FINAL API.
+  The README predates the blueprint spine and four sessions of surface
+  truth-making (P1 ring control, P2 doors, P3 bypass signals, P4 record
+  doors + minCount, P5 cookbook). Writing it earlier would have meant
+  writing it twice. It also gets the section this package uniquely owes
+  its ecosystem: the boundary statement (what lives here vs
+  lite-gc-profiler vs lite-leak -- SUGGESTIONS.md's table, made
+  canonical). The cookbook shipped in P5; this session links it and
+  freezes docs/code agreement behind a drift-guard test.
 
-HOUSE-PATTERN LAW (read before writing a single recipe)
-  The planner and coder MUST read, as pattern sources, not from memory:
-  - ../LiteGcProfiler/COOKBOOK.md (structure, voice, the graded arc,
-    recipes 23-25 framework tier) and ../LiteGcProfiler/examples/
-    (README + react.mjs + vue.mjs + angular.mjs -- note HOW they stay
-    runnable and what dependency posture they take; mirror it).
-  - ../LiteLeak/COOKBOOK.md (tier structure) and lite-leak's
-    test/cookbook.test.js (the recipe-rot pinning device -- adopt its
-    mechanism adapted to this package).
-  Do not invent a house style; both siblings already agree on one.
+NAMING TRUTH (read before copying anything from ROADMAP.md's P6 draft)
+  The roadmap's P6 brief predates the P3 naming decision. The SHIPPED
+  threshold is `maxOldGen` (old-gen = major + incremental, decisions/
+  0003), NOT `maxMajors`. The result fields are `oldGenLo/Hi`, and the
+  five signals are: scavenges / counters / retainedKB / oldGen /
+  arrayBuffersKB. Every table and signature in the new docs uses the
+  shipped names -- verify each against PerfGate.js by grep, never from
+  the roadmap draft or from memory.
+
+BLUEPRINT LAW
+  README.md is rebuilt on ../LiteSepforge/README.md -- the spine, same
+  sections, same order (CLAUDE.md Docs law): title + one-line blockquote
+  tagline; badges; positioning H2 ("The CI gate the ecosystem was
+  missing") with inline install + runnable quick-start; TOC; Why this
+  exists; What you get; <details> deep-dive on the measurement core
+  (five signals, two scales, pretenuring + escape-analysis story from
+  decisions/0001, controls incl. controlLarge ordering from 0003);
+  API reference (signatures + a constants table); Composability (one
+  full end-to-end pipeline in code); <details> Zero-GC design notes
+  (allocation table + gated T4 numbers from decisions/0004); Design
+  decisions worth knowing (linking decisions/0001..0004); Testing
+  (real test counts + npm scripts incl. torture); What this is not
+  (boundary law verbatim, reach-for pointers, the C1 documented hole);
+  Ecosystem; License. The coder READS the LiteSepforge README first;
+  do not invent a spine.
 
 TASKS
-  - COOKBOOK.md, four tiers, ~15 recipes, ASCII, added to files[]
-    (7 -> 8; npm pack asserted):
-    Tier 1 -- first verdict:
-      R0 just show me a number (measure + formatResult)
-      R1 my first gate (zgcSuite, one scenario, the run flags)
-      R2 reading a detector-validation failure (positive floor /
-         scaling / negative ceiling / large-control clause -- what
-         each clause means and what to do about it; the pretenuring
-         story from decisions/0001 in two sentences)
-      R3 thresholds you can defend (maxScavenges / maxRetainedKB /
-         maxOldGen / maxArrayBuffersKB / counters; N and k; flushMs on
-         saturated CI; what the C1 documented hole means for string-
-         heavy workloads, honestly, one paragraph)
-    Tier 2 -- engine counters (SUGGESTIONS direction 3):
-      R4 pool engine: statsOf + counters {poolGrowths: 0}
-      R5 lite-arena ECS: spawn/retire counters + zero-alloc tick
-         (lite-arena as devDep; verify its actual API from
-         ../LiteArena/llms.txt -- never from memory)
-      R6 mustFail: proving the gate can catch a planted allocation
-    Tier 3 -- streams + CI:
-      R7 suiteGate over a lite-scope memory sink (toSlab -> budgets;
-         lite-scope as devDep; API from ../LiteScope/llms.txt)
-      R8 toNDJSON as a GitHub Actions artifact + job summary (workflow
-         yaml block included, marked illustrative)
-      R9 runGate in a bare script; mapping result.code 0/1/2
-      R10 one stream, three budgets: gc-pause + leak-orphan +
-          input-latency shapes over one slab, with minCount presence
-          assertions (the SUGGESTIONS example, runnable)
-    Tier 4 -- framework integration (mirrors gc-profiler 23-25):
-      R11 Express/Fastify route-handler gating (server-side FIRST --
-          this package's home turf; follow the sibling dependency
-          posture for how the example stays runnable)
-      R12 React render loop  R13 Vue reactivity tick
-      R14 Angular change detection
-      R15 the trio recipe: perf-gate gates, gc-profiler diagnoses the
-          failure, lite-leak attributes it -- one runnable file; this
-          doubles as the D1 demo's script in prose.
-  - examples/ directory (repo-only, NEVER in files[]): one runnable
-    .mjs per Tier-4 recipe + trio.mjs + README, each with one
-    documented run command, mirroring the gc-profiler examples/
-    posture exactly (including its dependency stance).
-  - Recipe rot guard (the lite-leak device): test/cookbook.test.mjs
-    executes every recipe's code (or its examples/ twin) so a surface
-    change fails CI instead of aging the book. Heavy framework recipes
-    may be smoke-level (import + one tick). npm test stays < 90s.
-  - devDependencies: add @zakkster/lite-arena and @zakkster/lite-scope
-    (versions verified against the registry/catalog: arena ^1.9.0,
-    scope ^1.2.0); npm install; lockfile stays gitignored. Framework
-    deps follow the sibling posture -- if gc-profiler's examples avoid
-    installing frameworks, so do ours, the same way.
-  - package.json files[] gains COOKBOOK.md; CHANGELOG 1.4.1 dated
-    2026-09-13 (Added: cookbook + examples + rot guard; note the
-    recipes document the post-P4 surface).
-  - Three-place sync 1.4.0 -> 1.4.1.
+  - README.md rebuilt per BLUEPRINT LAW. Constants table rows verified
+    by grep against PerfGate.js: N 200000, k 8, flushMs 100 (+ env
+    PERF_GATE_FLUSH_MS), maxScavenges 2, maxRetainedKB 64, maxOldGen 0,
+    maxArrayBuffersKB 64, CONTROL_FLOOR 6, CONTROL_SCALE 2,
+    CONTROL_NEG_CEIL 2, CONTROL_LARGE_FLOOR 277, CONTROL_RING_SIZE 64
+    (exact names re-checked in source; the table prints what the code
+    says, and the drift test enforces it thereafter).
+  - Composability section, one runnable-shaped pipeline: engine statsOf
+    -> zgcSuite in CI; gate failure -> lite-gc-profiler diagnosis ->
+    lite-leak attribution; lite-scope sink -> suiteGate (minCount) ->
+    toNDJSON artifact. Quick-start stays small; depth defers to
+    COOKBOOK.md (linked from positioning H2 and Testing).
+  - llms.txt: complete-enough-to-write-a-correct-gate-alone audit --
+    five signals, every threshold + default, every door (what throws vs
+    what fails closed), minCount, allowNoGc/allowEmpty, control floors
+    (currently missing), formatResult, GateResult.code. Fix the stray
+    mid-sentence line break in the v1.4.1 paragraph.
+  - PerfGate.d.ts final sync against exports; JSDoc gains flushMs on
+    zgcSuite (PG-16). PerfGate.js changes are VERSION + comments ONLY.
+  - Docs-drift guard test (new test/docs.test.mjs or a self.test.mjs
+    section -- planner decides): BOTH directions -- (a) every named
+    export of PerfGate.js appears in llms.txt AND in README's API
+    section; (b) every documented option/threshold name in the README
+    constants table and llms.txt exists in PerfGate.js source. Plus:
+    every relative link in README resolves; constants-table values
+    match source values. Must be provably load-bearing (break one
+    direction, watch it fail, restore -- the T6 instinct).
+  - decisions/0001..0004 linked from README (Design decisions section)
+    and from the PerfGate.js header comment block; decisions/ stays out
+    of files[] (npm pack asserted, still 8 files).
+  - CHANGELOG 1.4.2 dated 2026-09-13 (docs-only release: README
+    blueprint rebuild, boundary statement, llms/d.ts sync, drift
+    guard); three-place sync 1.4.1 -> 1.4.2.
+  - Grep every new/rewritten file for stray tool-call tags and
+    non-ASCII before trusting it.
 
 HOT PATH
-  Docs session; the library diff is EMPTY (PerfGate.js untouched
-  except nothing at all -- version const only). The recipe code itself
-  obeys every law it teaches: a cookbook recipe that fails its own
-  gate is the AR-02 lesson in print, and the rot-guard test enforces
-  exactly that.
+  None. Docs session: the diff outside test/ contains no logic.
+  PerfGate.js diff vs HEAD is the VERSION line plus comment-only lines
+  (zgcSuite JSDoc flushMs, header decision links) -- diff-proven; every
+  hot body byte-identical.
 
 ASSERTIONS
-  - Every recipe R0-R15 exists in COOKBOOK.md under its tier; every
-    Tier-4 recipe has a runnable examples/ twin; examples/README
-    documents one command per example.
-  - test/cookbook.test.mjs green and genuinely load-bearing: deleting
-    one pinned recipe's code makes it fail (spot-check one, revert,
-    prove restoration).
-  - npm pack --dry-run: 8 files, COOKBOOK.md in; examples/, test/,
-    decisions/, test/probes/ out.
-  - npm test 10x loop green, single run < 90s (new total reported);
-    npm run torture untouched and still ok < 180s.
-  - PerfGate.js diff vs HEAD: VERSION line only.
-  - ASCII everywhere; three-place sync 1.4.1; no "Karadjov"; HEAD
-    (d7d1477) moves only by orchestrator commits; no publish
-    (registry: 1.3.0 latest published; the consolidated 1.4.0 pending user).
+  - Drift guard green, and provably load-bearing in both directions
+    (temporarily removing one export mention from llms.txt fails it;
+    temporarily documenting a fake option fails it; both restored).
+  - README section order matches ../LiteSepforge/README.md's spine
+    exactly; every relative link resolves; COOKBOOK.md linked.
+  - Every constants-table value greps to the same value in PerfGate.js.
+  - npm pack --dry-run: 8 files; decisions/, test/, demo/, examples/
+    out; README/CHANGELOG/llms.txt/COOKBOOK.md in.
+  - npm test 10x green, single run < 90s (report new total count);
+    npm run torture untouched, "ok", < 180s.
+  - ASCII-only (-> <= x --); no "Karadjov" anywhere; three-place sync
+    1.4.2; no publish (registry latest: 1.4.1; user ships 1.4.2).
+  - PerfGate.js diff vs HEAD: VERSION + comments only.
 
 NON-GOALS
-  No README rewrite (P6). No new library surface -- a recipe that
-  needs one is a ledger finding, not a feature. No browser recipes
-  (NOT FOR stands; streams are the browser story and live in D1). No
-  demo work (D1 is its own build with its own brief).
+  No behavior change, no new surface, no threshold moves. No demo/
+  rebuild (demo-audit is a separate decision for a separate day). No
+  COOKBOOK.md content changes beyond nothing at all -- recipe edits are
+  P5's ledger, not P6's. D1 (trio demo) is its own build after this.
 
 DONE WHEN
-  cookbook ships in the tarball, recipes pinned by test, examples
-  runnable, siblings' bar met (graded arc + framework tier + CI tier)
+  README/llms.txt/d.ts/code agree and a test enforces it; boundary
+  statement + cookbook linked; npm test and torture green; commit
+  ready for the user to review and publish 1.4.2

@@ -46,7 +46,39 @@ verdict(result, thresholds) -- { pass: boolean, reasons: string[] }.
   'arrayBuffers: NKB > 64KB (external memory -- diagnose with @zakkster/lite-gc-profiler)'.
   arrayBuffers is skipped under allowNoGc; an explicit maxArrayBuffersKB with
   allowNoGc throws (mirrors maxRetainedKB). oldgen gates even under allowNoGc.
-runGate(config) -- standalone report; returns {passed, code, results}, code 0 pass / 1 scenario or must-fail failure / 2 detector validation failed; never sets process.exitCode.
+runGate(config) -- standalone report; returns {passed, code, results}. code:
+  0 pass, 1 scenario or must-fail failure, 2 detector validation failed;
+  passed === (code === 0); never sets process.exitCode (map result.code
+  yourself). GateResult.code is the field to switch on. This is also the
+  GateResult.code carried in the return object.
+formatResult(result) -- one-line human summary of a MeasureResult (scavenges at
+  N and k*N, retained KB, and oldgen / arrayBuffers / counter deltas only when
+  nonzero). Pure string builder; used by zgcSuite/runGate report output.
+VERSION -- package version string ('1.4.2'); asserted === package.json.version.
+
+## Built-in controls + detector floors
+
+controlPositive -- positive control: allocates one {x,y,z,w} per iteration into
+  a bounded 64-slot ring (escapes AND dies young, so V8 escape-analysis and
+  allocation-site pretenuring cannot make it invisible; decisions/0001).
+controlNegative -- negative control: pure arithmetic, zero allocation.
+controlLarge -- external/arrayBuffers control: a bounded, mask-gated retained
+  pool of 64KB ArrayBuffers (~832KB at the pinned k*N, 13x the default gate);
+  validates signal 5, measured LAST so its scheduled-scavenge residue poisons
+  nothing (decisions/0003). Override any of the three via config.positiveControl
+  / negativeControl / largeControl.
+_controlKeepAlive() -- @internal; reads every ring slot (returns occupancy
+  0..64) so V8 cannot sink the positive-control stores.
+
+Detector-validation floors (decoupled from the consumer's thresholds so the
+evidence the instrument owes never gets cheaper; decisions/0001, 0003):
+  CONTROL_FLOOR 6       -- positive control scavenges required at k*N.
+  CONTROL_SCALE 2       -- positive control minorHi must be >= 2*minorLo.
+  CONTROL_NEG_CEIL 2    -- negative control scavenge ceiling.
+  CONTROL_LARGE_FLOOR 277 -- controlLarge arrayBuffers KB required at k*N.
+  CONTROL_RING_SIZE 64  -- positive-control ring slots.
+validateDetector(pos, neg, large, maxScav) refuses to judge (code 2 / assertion)
+if any floor is missed; every clause is written to fail closed on NaN.
 
 ## Scenario shape
 
@@ -143,7 +175,13 @@ every recipe's first code block is extracted from COOKBOOK.md; deterministic
 recipes execute as bare child processes (R0/R2/R3/R7/R8/R10), while
 load-sensitive live-PASS measurement recipes (R1/R4/R5/R6/R9) and Tier 4 are
 compile-checked with their examples/ twin spawned; commenting any recipe body
-out fails CI naming it. No
-library surface change: PerfGate.js diff vs 1.4.0 is the VERSION line only.
-lite-arena ^1.9.0 and lite-scope ^1.2.0 added as devDependencies for the ECS
-and SPP-stream recipes (still zero runtime deps).
+out fails CI naming it. No library surface change: PerfGate.js diff vs 1.4.0 is
+the VERSION line only. lite-arena ^1.9.0 and lite-scope ^1.2.0 added as
+devDependencies for the ECS and SPP-stream recipes (still zero runtime deps).
+
+v1.4.2 docs-only: README rebuilt on the suite blueprint spine (positioning H2,
+constants table, Composability pipeline, Zero-GC design notes, boundary
+statement, decisions/ links); llms.txt completed to gate-alone parity;
+test/docs.test.mjs drift guard added to files run by npm test. No library
+surface change: PerfGate.js diff vs 1.4.1 is the VERSION line plus comment-only
+header links to decisions/0001..0004.

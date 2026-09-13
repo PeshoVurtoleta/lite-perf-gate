@@ -736,7 +736,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-perf-gate"
 version_target: 1.4.1
-status: planned
+status: shipped
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -892,7 +892,7 @@ ASSERTIONS
     PerfGate.js.
   - `npm pack --dry-run`: README/CHANGELOG/llms.txt in, decisions/ and
     test/ and demo/ out.
-  - torture "ok"; npm test green; three-place sync 1.4.1.
+  - torture "ok"; npm test green; three-place sync 1.4.2.
 
 NON-GOALS
   No behavior change; the diff outside test/ contains no logic. Demo
@@ -901,7 +901,7 @@ NON-GOALS
 
 DONE WHEN
   README/llms.txt/d.ts/code agree and a test enforces it; the boundary
-  statement and cookbook shipped; /release 1.4.1 clean
+  statement and cookbook shipped; /release 1.4.2 clean
 ```
 
 ---

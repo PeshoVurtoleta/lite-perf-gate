@@ -23,11 +23,22 @@
  * a 0-or-1 signal is noise -- decisions/0003). Controls validate the detector
  * on every run.
  *
+ * Design decisions (rationale, measurements, rejected shapes):
+ *   decisions/0001-positive-control.md -- the bounded-ring positive control
+ *     and its own validation margin (CONTROL_FLOOR/SCALE/NEG_CEIL); PG-01, PG-10.
+ *   decisions/0002-fail-closed.md      -- the fail-closed door policies; PG-04,
+ *     PG-05, PG-08, PG-09, PG-11, PG-14.
+ *   decisions/0003-bypass-signals.md   -- the GC-kind census that chose the
+ *     old-gen and arrayBuffers lanes, controlLarge, and the C1 documented hole;
+ *     PG-02, PG-03a, PG-03b.
+ *   decisions/0004-record-doors.md     -- suiteGate record doors, inherited-key
+ *     hardening, CONT rejection, minCount, and the T4 cost; PG-06, PG-12, PG-13.
+ *
  * Copyright (c) 2026 Zahary Shinikchiev <shinikchiev@yahoo.com>
  * MIT License
  */
 
-export const VERSION = '1.4.1';
+export const VERSION = '1.4.2';
 
 import {PerformanceObserver, constants} from 'node:perf_hooks';
 import {setTimeout as sleep} from 'node:timers/promises';

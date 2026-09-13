@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.4.2] - 2026-09-13
+
+Docs-only release. The library surface is unchanged: `PerfGate.js` differs from
+1.4.1 by the `VERSION` line and comment-only lines (the header comment now links
+`decisions/0001..0004`). No hot body changed; the measurement window in
+`meterOnce` and `suiteGate`'s `visit` are byte-identical to 1.4.1.
+
+### Added
+
+- **`README.md` rebuilt on the LiteSepforge blueprint spine.** Same section
+  order as the suite's documentation blueprint: title + tagline; badges; the
+  positioning H2 "The CI gate the ecosystem was missing" with inline install and
+  a runnable `zgcSuite` quick-start; table of contents; Why this exists; What you
+  get; a `<details>` deep-dive on the five signals, two scales, and controls; API
+  reference with a constants table; a Composability end-to-end pipeline; a
+  `<details>` Zero-GC design notes with the T4-gated numbers; Design decisions
+  linking `./decisions/0001..0004`; Testing with real counts and all npm scripts;
+  What this is not (the boundary statement vs `@zakkster/lite-gc-profiler` and
+  `@zakkster/lite-leak`, plus the C1 Node-26 documented hole); Ecosystem;
+  License. Depth defers to `COOKBOOK.md`, now linked from the README.
+- **The boundary statement, made canonical.** "What this is not" states, in
+  prose, what lives here vs in `lite-gc-profiler` (deep diagnosis, browser,
+  frame-loop, retained-bytes/op) vs `lite-leak` (owner-tree attribution), with
+  reach-for pointers -- the SUGGESTIONS.md separation, promoted into the README.
+- **`test/docs.test.mjs`, the docs-drift guard** (added to `scripts.test`):
+  loads the library with `import * as PG` (runtime truth, not a source regex) and
+  asserts, in both directions, that every named export is documented in `llms.txt`
+  and the README API reference, that every constants-table row name and every
+  documented option/threshold exists in `PerfGate.js` source, that every
+  constants-table value equals the source literal, and that every relative README
+  link resolves on disk. Side-effect-free: it never calls `measure()`.
+
+### Changed
+
+- **`llms.txt` completed to write-a-correct-gate-alone parity:** adds the control
+  floors (`CONTROL_FLOOR`, `CONTROL_SCALE`, `CONTROL_NEG_CEIL`,
+  `CONTROL_LARGE_FLOOR`, `CONTROL_RING_SIZE`), `formatResult`, the built-in
+  controls (`controlPositive` / `controlNegative` / `controlLarge`),
+  `_controlKeepAlive`, `VERSION`, and `GateResult.code`; and fixes the
+  mid-sentence line break in the v1.4.1 paragraph.
+- **`PerfGate.js` header comment** now links `decisions/0001..0004` with the
+  findings each records. `VERSION` reads `1.4.2` (three-place sync with
+  `package.json` and this file).
+
 ## [1.4.1] - 2026-09-13
 
 Docs-only release. The library surface is unchanged: `PerfGate.js` differs from
