@@ -295,7 +295,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-perf-gate"
 version_target: 1.3.0
-status: planned
+status: shipped
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
