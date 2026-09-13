@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-perf-gate",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
   "description": "Zero-GC and performance regression gate for node:test. Scavenge-counting, scaling verdict, detector self-validation. Proves your hot path allocates nothing -- or names what did.",
   "type": "module",
@@ -20,12 +20,13 @@
     "PerfGate.js",
     "PerfGate.d.ts",
     "README.md",
+    "COOKBOOK.md",
     "llms.txt",
     "LICENSE",
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --expose-gc --max-semi-space-size=4 --test test/self.test.mjs",
+    "test": "node --expose-gc --max-semi-space-size=4 --test test/self.test.mjs test/cookbook.test.mjs",
     "torture": "node --expose-gc --max-semi-space-size=4 test/torture.mjs",
     "prepublishOnly": "npm test"
   },

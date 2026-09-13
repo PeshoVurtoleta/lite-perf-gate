@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.4.1] - 2026-09-13
+
+Docs-only release. The library surface is unchanged: `PerfGate.js` differs from
+1.4.0 by the `VERSION` line only. The recipes document the final post-P4
+surface (five signals, fail-closed doors, `minCount`, `GateResult.code`,
+`allowNoGc` / `allowEmpty`, `controlLarge`, dated residues).
+
+### Added
+
+- **`COOKBOOK.md`** (added to `files[]`, 7 -> 8): 16 recipes (R0-R15) across
+  four tiers -- first verdict, engine counters, streams + CI, and framework
+  integration -- with a Contents block and the sibling recipe voice (Goal /
+  Primitive / Code / Reading the verdict / Gotchas). R2 walks all four
+  `validateDetector` clauses plus the pretenuring story (decisions/0001); R3
+  covers all five thresholds, `N`/`k`, `flushMs` on saturated CI, the C1
+  documented string-heavy hole (decisions/0003), and the `NaN` reducer residue
+  (decisions/0004).
+- **`examples/`** (repo-only, never in `files[]`): runnable, zero-dependency
+  twins for the framework recipes -- `express.mjs`, `react.mjs`, `vue.mjs`,
+  `angular.mjs` -- plus `trio.mjs` (real `@zakkster/lite-gc-profiler` +
+  `@zakkster/lite-leak`: gate, diagnose, attribute) and a `README.md`
+  documenting one run command per file.
+- **`test/cookbook.test.mjs`**, the recipe-rot guard: every recipe's first code
+  block is extracted from `COOKBOOK.md`; deterministic recipes execute as bare
+  child processes (R0/R2/R3/R7/R8/R10), while load-sensitive live-PASS
+  measurement recipes (R1/R4/R5/R6/R9) and the Tier-4 framework blocks are
+  compile-checked with their `examples/` twins spawned. A commented-out or
+  missing recipe body fails CI naming the recipe.
+- **devDependencies**: `@zakkster/lite-arena` ^1.9.0 and `@zakkster/lite-scope`
+  ^1.2.0, for the ECS counter recipe and the SPP-stream `suiteGate` recipes.
+  Zero runtime dependencies is unchanged.
+
 ## [1.4.0] - 2026-09-13
 
 > One release, three roadmap sessions. The registry latest was 1.3.0;

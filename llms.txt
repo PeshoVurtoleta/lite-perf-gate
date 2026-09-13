@@ -133,3 +133,17 @@ v1.2 toNDJSON(x, meta?): NDJSON for CI artifacts; accepts suiteGate result,
 measure result, or array; budget lines then suite-gate summary; meta merged
 per line; trailing newline. The budget-line shape is frozen: minCount is on
 the in-process result object, NOT on the NDJSON line.
+
+v1.4.1 docs-only: COOKBOOK.md ships (files[] 7 -> 8), 16 recipes across four
+tiers (first verdict / engine counters / streams+CI / framework integration),
+all documenting the post-P4 surface. examples/ (repo-only, never in files[]):
+runnable zero-dependency twins express/react/vue/angular + trio.mjs (real
+lite-gc-profiler + lite-leak). test/cookbook.test.mjs is the recipe-rot guard:
+every recipe's first code block is extracted from COOKBOOK.md; deterministic
+recipes execute as bare child processes (R0/R2/R3/R7/R8/R10), while
+load-sensitive live-PASS measurement recipes (R1/R4/R5/R6/R9) and Tier 4 are
+compile-checked with their examples/ twin spawned; commenting any recipe body
+out fails CI naming it. No
+library surface change: PerfGate.js diff vs 1.4.0 is the VERSION line only.
+lite-arena ^1.9.0 and lite-scope ^1.2.0 added as devDependencies for the ECS
+and SPP-stream recipes (still zero runtime deps).
