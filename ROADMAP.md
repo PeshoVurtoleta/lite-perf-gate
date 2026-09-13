@@ -412,7 +412,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-perf-gate"
 version_target: 1.4.0
-status: planned
+status: shipped (in the consolidated 1.4.0 release)
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -512,8 +512,8 @@ DONE WHEN
 ```markdown
 ---
 package: "@zakkster/lite-perf-gate"
-version_target: 1.5.0
-status: planned
+version_target: 1.5.0 (interim)
+status: shipped (in the consolidated 1.4.0 release)
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -629,8 +629,8 @@ DONE WHEN
 ```markdown
 ---
 package: "@zakkster/lite-perf-gate"
-version_target: 1.6.0
-status: planned
+version_target: 1.6.0 (interim)
+status: shipped (in the consolidated 1.4.0 release)
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
