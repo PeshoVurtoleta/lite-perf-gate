@@ -27,7 +27,8 @@ import {
     measure, verdict, formatResult,
     controlPositive, controlNegative,
     _controlKeepAlive, VERSION,
-    suiteGate, toNDJSON
+    suiteGate, toNDJSON,
+    zgcSuite, runGate
 } from '../PerfGate.js';
 
 assert.ok(typeof globalThis.gc === 'function', 'run with --expose-gc');
@@ -429,7 +430,10 @@ test('runGate goes red when the positive control is sabotaged (bare child)', fun
         // a short window lets pretenuring drop the control's minorHi below CONTROL_FLOOR
         // deterministically, whereas at library defaults the pretenured site intermittently
         // clears the floor and the scale clause under load (~31% false-green observed).
-        'const out = await runGate({ scenarios: [], positiveControl: stock, N: 20000, k: 8 });',
+        'const out = await runGate({ scenarios: [], allowEmpty: true, positiveControl: stock, N: 20000, k: 8 });',
+        // Carry the process contract out on stdout: code 2 (detector), passed
+        // false, and process.exitCode UNTOUCHED (read before the explicit exit).
+        'process.stdout.write("PG2 " + JSON.stringify({ code: out.code, passed: out.passed, exitCode: String(process.exitCode) }) + "\\n");',
         'process.exit(out.passed ? 0 : 1);'
     ].join('\n');
     const r = spawnSync(
@@ -440,4 +444,143 @@ test('runGate goes red when the positive control is sabotaged (bare child)', fun
     assert.notEqual(r.status, 0, 'sabotaged runGate must fail:\n' + r.stdout + r.stderr);
     assert.match(r.stdout, /DETECTOR VALIDATION FAILED/);
     assert.match(r.stdout, /need >=6/);
+    const pg2 = JSON.parse(r.stdout.split('\n').filter(function (l) { return l.indexOf('PG2 ') === 0; }).pop().slice(4));
+    assert.equal(pg2.code, 2, 'detector failure is code 2');
+    assert.equal(pg2.passed, false);
+    assert.equal(pg2.passed, pg2.code === 0);
+    assert.equal(pg2.exitCode, 'undefined', 'runGate must not touch process.exitCode');
+});
+
+// ---------------------------------------------------------------------------
+// Fail-closed doors (v1.4.0, decision 0002) -- PG-04/05/08/09/11/14
+// ---------------------------------------------------------------------------
+
+test('verdict: threshold doors throw at config time', function () {
+    const r = { name: 'x', minorHi: 999, retainedKB_hi: 9999, counters_hi: { g: 1 } };
+    assert.throws(function () { verdict(r, { maxScavenges: NaN }); }, RangeError);
+    assert.throws(function () { verdict(r, { maxScavenges: -1 }); }, RangeError);
+    assert.throws(function () { verdict(r, { maxRetainedKB: NaN }); }, RangeError);
+    assert.throws(function () { verdict(r, { counters: { g: NaN } }); }, RangeError);
+    // twins one valid step away pass on a clean result
+    const clean = { name: 'x', minorHi: 0, retainedKB_hi: 0, counters_hi: { g: 0 } };
+    assert.equal(verdict(clean, { maxScavenges: 2 }).pass, true);
+    assert.equal(verdict(clean, { maxRetainedKB: 0 }).pass, true);
+    assert.equal(verdict(clean, { counters: { g: 0 } }).pass, true);
+});
+
+test('verdict: NaN measurements fail closed with named reasons', function () {
+    // PG-C2: a result whose gated signals are NaN, against DEFAULT thresholds.
+    const bad = { name: 'x', minorHi: NaN, retainedKB_hi: NaN, counters_hi: null };
+    const v = verdict(bad);
+    assert.equal(v.pass, false);
+    assert.ok(v.reasons.includes('scavenges: not a number (fail closed)'));
+    assert.ok(v.reasons.includes('retained: not a number (fail closed)'));
+    // A3/A2 exact-order proof with the counter lane engaged.
+    const bad2 = { name: 'x', minorHi: NaN, retainedKB_hi: NaN, counters_hi: { g: NaN } };
+    const v2 = verdict(bad2, { counters: { g: 0 } });
+    assert.equal(v2.pass, false);
+    assert.deepEqual(v2.reasons, [
+        'scavenges: not a number (fail closed)',
+        'retained: not a number (fail closed)',
+        'g: not a number (fail closed)'
+    ]);
+    // twin with 0/0 passes.
+    const good = { name: 'x', minorHi: 0, retainedKB_hi: 0, counters_hi: null };
+    assert.equal(verdict(good).pass, true);
+});
+
+test('verdict: unknown and absent counters fail closed', function () {
+    // PG-D typo: threshold key poolGrowth vs measured poolGrowths.
+    const typo = { name: 'x', minorHi: 0, retainedKB_hi: 0, counters_hi: { poolGrowths: 99 } };
+    const v1 = verdict(typo, { counters: { poolGrowth: 0 } });
+    assert.equal(v1.pass, false);
+    assert.deepEqual(v1.reasons, ['poolGrowth: no such counter measured (statsOf keys: poolGrowths)']);
+    // counters_hi null (scenario had no statsOf) -> one reason naming the keys.
+    const noStats = { name: 'x', minorHi: 0, retainedKB_hi: 0, counters_hi: null };
+    const v2 = verdict(noStats, { counters: { poolGrowth: 0 } });
+    assert.equal(v2.pass, false);
+    assert.equal(v2.reasons.length, 1);
+    assert.ok(v2.reasons[0].startsWith('counters: thresholds set (poolGrowth)'));
+    assert.ok(v2.reasons[0].endsWith('(fail closed)'));
+    // twin with the correct key -> ordinary over-budget reason.
+    const v3 = verdict(typo, { counters: { poolGrowths: 0 } });
+    assert.equal(v3.pass, false);
+    assert.deepEqual(v3.reasons, ['poolGrowths: 99 > 0']);
+});
+
+test('measure: option doors throw, flushMs 0 is honored', async function () {
+    const bads = [{ N: -1 }, { N: 0 }, { N: 1.5 }, { k: 0.5 }, { k: 1 }, { k: NaN },
+        { flushMs: -50 }, { flushMs: NaN }, { flushMs: '10' }, { allowNoGc: 1 }, { allowNoGc: 'yes' }];
+    for (const opts of bads) {
+        await assert.rejects(measure(controlNegative, opts), function (e) {
+            return (e instanceof RangeError || e instanceof TypeError) &&
+                e.message.indexOf('lite-perf-gate: measure: ') === 0;
+        }, 'expected throw for ' + JSON.stringify(opts));
+    }
+    // twins resolve.
+    const tiny = { name: 't', setup: function () { return { a: 0 }; }, hot: function (s, n) { for (let i = 0; i < n; i++) s.a += i; } };
+    await measure(tiny, { N: 1, k: 2 });
+    await measure(tiny, { flushMs: 0 });
+    // timing proof: flushMs 0 reaches sleep(0), flushMs 200 costs 2 passes.
+    const s0 = Date.now(); await measure(tiny, { N: 1, k: 2, flushMs: 0 }); const d0 = Date.now() - s0;
+    const s1 = Date.now(); await measure(tiny, { N: 1, k: 2, flushMs: 200 }); const d200 = Date.now() - s1;
+    assert.ok(d0 < 150, 'flushMs 0 should be fast, saw ' + d0 + 'ms');
+    assert.ok(d200 >= 400, 'flushMs 200 (two passes) >= 400ms, saw ' + d200 + 'ms');
+    assert.ok(d200 - d0 >= 300, 'delta >= 300ms, saw ' + (d200 - d0) + 'ms');
+});
+
+test('zgcSuite/runGate: empty gates throw, allowEmpty opens them', async function () {
+    assert.throws(function () { zgcSuite({ scenarios: [] }); }, /non-empty array|must be an array/);
+    assert.throws(function () { zgcSuite({}); }, /non-empty array|must be an array/);
+    await assert.rejects(runGate({ scenarios: [] }), /non-empty array|must be an array/);
+    await assert.rejects(runGate({ scenarios: 'x' }), /non-empty array|must be an array/);
+    // allowEmpty opens the gate: the child fixture registers exactly the one
+    // detector test and names its reduced job. Proven via TAP, not by
+    // re-registering a test in this file (which would run under the parent).
+    // Spawned WITHOUT --test (node:test auto-runs top-level tests) and with
+    // NODE_TEST_CONTEXT stripped, so the parent runner does not make the child
+    // skip its files as a recursive run.
+    const abs = fileURLToPath(new URL('./fixtures/empty-allowed.test.mjs', import.meta.url));
+    const childEnv = Object.assign({}, process.env);
+    delete childEnv.NODE_TEST_CONTEXT;
+    const r = spawnSync(
+        process.execPath,
+        ['--expose-gc', '--max-semi-space-size=4', abs],
+        { encoding: 'utf8', timeout: 60000, env: childEnv }
+    );
+    assert.equal(r.status, 0, 'empty-allowed fixture should pass\n' + r.stdout + r.stderr);
+    assert.match(r.stdout + r.stderr, /detector validation only \(allowEmpty, 0 scenarios\)/);
+});
+
+test('runGate: code 0 and code 1 (bare children, library defaults)', function () {
+    function child(cfgSrc) {
+        const src = [
+            'import { runGate, controlNegative } from ' + JSON.stringify(PERFGATE_URL) + ';',
+            'void controlNegative;',
+            'const out = await runGate(' + cfgSrc + ');',
+            'process.stdout.write("PG2 " + JSON.stringify({ code: out.code, passed: out.passed, results: out.results.length, exitCode: String(process.exitCode) }) + "\\n");',
+            'process.exit(0);'
+        ].join('\n');
+        const r = spawnSync(
+            process.execPath,
+            ['--expose-gc', '--max-semi-space-size=4', '--input-type=module', '-e', src],
+            { encoding: 'utf8', timeout: 60000 }
+        );
+        assert.equal(r.status, 0, 'child errored\n' + r.stdout + r.stderr);
+        return JSON.parse(r.stdout.split('\n').filter(function (l) { return l.indexOf('PG2 ') === 0; }).pop().slice(4));
+    }
+    const c0 = child('{ scenarios: [], allowEmpty: true }');
+    assert.equal(c0.code, 0);
+    assert.equal(c0.passed, true);
+    assert.equal(c0.results, 0);
+    assert.equal(c0.exitCode, 'undefined');
+    assert.equal(c0.passed, c0.code === 0);
+
+    // A pure-arithmetic must-fail can never trip the gate: MISSED -> code 1.
+    const c1 = child('{ scenarios: [], allowEmpty: true, mustFail: [controlNegative] }');
+    assert.equal(c1.code, 1);
+    assert.equal(c1.passed, false);
+    assert.equal(c1.results, 0);
+    assert.equal(c1.exitCode, 'undefined');
+    assert.equal(c1.passed, c1.code === 0);
 });

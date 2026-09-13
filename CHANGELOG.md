@@ -1,5 +1,101 @@
 # Changelog
 
+## [1.4.0] - 2026-09-13
+
+### Changed
+
+- **Thresholds throw instead of passing everything (PG-04).**
+  `maxScavenges` and `maxRetainedKB` must be finite numbers >= 0 and
+  every `counters` maximum must be a finite number; NaN, Infinity,
+  negative counts and non-numbers now raise TypeError/RangeError at
+  config time, prefixed `lite-perf-gate: <where>: ` and naming the
+  field and the value. Reproduction inverted:
+  `verdict(r, {maxScavenges: NaN, maxRetainedKB: NaN})` used to pass a
+  result carrying 999 scavenges and 9999KB retained.
+- **A NaN measurement fails instead of passing (PG-04).** A gated signal
+  that is not a finite number now produces
+  `'<signal>: not a number (fail closed)'` -- `scavenges`, `retained`,
+  or the counter's own key. A NaN measurement is evidence of a broken
+  instrument, never of a clean hot path.
+- **A counter threshold that matches nothing fails (PG-05).** A typo'd
+  key produces `'<key>: no such counter measured (statsOf keys: ...)'`;
+  counter thresholds set against a scenario with no `statsOf` produce
+  one `'counters: ... (fail closed)'` reason. Previously
+  `{poolGrowth: 0}` against a measured `poolGrowths: 99` passed with
+  zero reasons, forever, silently.
+- **Missing `--expose-gc` throws (PG-11).** `measure()` -- and so
+  `zgcSuite`/`runGate` -- refuses at entry when `globalThis.gc` is not
+  a function, with the exact run command in the message. Previously
+  `gc2()` no-opped and the retained signal judged uncollected garbage
+  (a plain-node run produced a spurious `retained: 2901KB > 64KB`).
+- **Empty scenario lists throw (PG-08).** `zgcSuite`/`runGate` reject a
+  missing, non-array or empty `scenarios`; pass `allowEmpty: true` for a
+  controls-only detector smoke run. `runGate`'s old `PASS -- 0/0
+  scenarios` rubber stamp is now `detector only (allowEmpty, 0
+  scenarios gated)`, and zgcSuite's control test renames itself
+  `detector validation only (allowEmpty, 0 scenarios)`.
+- **`measure()` options are validated, and `flushMs: 0` is honored
+  (PG-09).** `N` integer >= 1, `k` integer >= 2, `flushMs` finite >= 0,
+  `allowNoGc`/`allowEmpty` strictly boolean (a truthy non-`true` value
+  throws). Every `(options && options.X) || DEFAULT` resolution is now
+  `!== undefined`, so `flushMs: 0` reaches the sleep instead of
+  silently meaning 100ms -- the one backward-incompatible behavior
+  change in this release. `{N: -1}` used to skip every loop and make
+  the POSITIVE CONTROL report zero allocation; `{k: 0.5}` used to
+  invert the two-scale design; `{flushMs: -50}` used to collapse the
+  observer window to ~1ms with a Node TimeoutNegativeWarning.
+- **Scenario shapes are validated at the same door.** `name` a non-empty
+  string, `setup`/`hot` functions, `statsOf`/`teardown` functions when
+  present -- across `scenarios[]`, `mustFail[]`, `positiveControl` and
+  `negativeControl`, each named by its position in the message.
+- **`runGate`'s exit-code claim is corrected (PG-14).** The old
+  docstring -- and the 1.2.0 entry below -- promised "exit codes 0/1/2"
+  and set none. `runGate` never touches `process.exitCode`: runner
+  semantics stay in the runner layer. It now RETURNS `code` and the
+  docs say "map result.code to your exit code".
+
+### Added
+
+- **`code: 0 | 1 | 2` on GateResult.** 0 pass, 1 a failing scenario or
+  an uncaught `mustFail`, 2 detector validation failed.
+  `passed === (code === 0)`, asserted by test. Additive: `passed` and
+  `results` are unchanged.
+- **`allowNoGc`** (measure options + GateConfig). Runs without
+  `--expose-gc`; the result carries `retainedReliable: false`, the
+  retained rule is not applied at all (the default 64KB threshold
+  included), `retainedKB_lo/_hi` remain as diagnostics, and scavenges
+  and counters still gate. Combining it with an explicit
+  `maxRetainedKB` throws: retained is ungateable without the flag.
+- **`allowEmpty`** (GateConfig). The only sanctioned empty gate: a
+  controls-only detector smoke run, which is exactly what the torture
+  suite's T1a child is.
+- **`retainedReliable`** on MeasureResult. `false` only when `measure()`
+  ran without `globalThis.gc`; an absent field means reliable.
+- **Torture tier T2 -- fail-closed doors** (`test/torture/t2-doors.mjs`):
+  sixteen door cases hit from OUTSIDE the library, each with its passing
+  twin one valid step away, plus two children spawned WITHOUT
+  `--expose-gc` (one asserting the throw carries the run command, one
+  asserting the `allowNoGc` retained behavior). Third
+  control-for-the-control: `TORTURE_CONTROL=no-doors npm run torture`
+  routes the NaN cases through a legacy fail-open shim and T2 MUST fail.
+- **Six self-tests** (28 -> 34): threshold doors, NaN measurements,
+  unknown/absent counters, measure option doors including a timing proof
+  that `flushMs: 0` is honored, the empty-gate doors, and `runGate`
+  codes 0/1/2 in bare children with `process.exitCode` asserted
+  untouched in all three.
+- **`decisions/0002-fail-closed.md`** -- the six policies, the rejected
+  `allowNoGc` shapes, and the standing rejection of an `inconclusive`
+  third verdict.
+
+### Notes
+
+- Hot bodies are untouched: `meterOnce`'s measurement window (between
+  `makeGcCounter()` and `gcc.close()`) and `suiteGate`'s `visit` have a
+  byte-identical diff. Every door is config-time or verdict-time.
+- suiteGate sources that reduce to NaN now fail their budget closed
+  instead of passing silently -- a down payment on PG-06; the record
+  doors themselves are P4.
+
 ## [1.3.0] - 2026-09-13
 
 ### Changed

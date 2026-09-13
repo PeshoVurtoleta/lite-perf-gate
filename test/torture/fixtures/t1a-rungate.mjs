@@ -18,7 +18,9 @@ const stockControl = {
 };
 
 const sabotage = process.env.PGT_SABOTAGE === 'stock';
-const config = {scenarios: []};
+// allowEmpty: the torture-side proof of decision 0002 policy 6 -- a
+// controls-only detector smoke run. Without it runGate now throws on [].
+const config = {scenarios: [], allowEmpty: true};
 if (sabotage) config.positiveControl = stockControl;
 
 // Buffer console.log so the human report never pollutes stdout; the only

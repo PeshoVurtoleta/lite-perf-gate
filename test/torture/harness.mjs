@@ -25,12 +25,16 @@ export function note(msg) {
  *
  * @param {string} fixtureAbsPath  absolute path to the child fixture
  * @param {object} [env]           extra env vars merged over process.env
+ * @param {string[]} [flags]       node flags before the fixture path.
+ *   Defaults to the GC flags; T2's no-gc children pass [] to prove the
+ *   missing --expose-gc throw fires in a bare process.
  * @returns {{ result: object, r: object }}
  */
-export function runChild(fixtureAbsPath, env) {
+export function runChild(fixtureAbsPath, env, flags) {
+    const nodeFlags = flags === undefined ? ['--expose-gc', '--max-semi-space-size=4'] : flags;
     const r = spawnSync(
         process.execPath,
-        ['--expose-gc', '--max-semi-space-size=4', fixtureAbsPath],
+        nodeFlags.concat([fixtureAbsPath]),
         {encoding: 'utf8', timeout: 60000, env: Object.assign({}, process.env, env || {})}
     );
     if (r.status === null) {
@@ -83,7 +87,7 @@ export function TIER_SKIP(id, session) {
 // runs are the only other legal values; anything else is a typo and fails
 // closed rather than silently running the green path.
 export const CONTROL = process.env.TORTURE_CONTROL || '';
-if (CONTROL !== '' && CONTROL !== 'stock-control' && CONTROL !== 'leaky-soak') {
+if (CONTROL !== '' && CONTROL !== 'stock-control' && CONTROL !== 'leaky-soak' && CONTROL !== 'no-doors') {
     die('unknown TORTURE_CONTROL=' + CONTROL +
-        ' (expected stock-control or leaky-soak)');
+        ' (expected stock-control, leaky-soak, or no-doors)');
 }

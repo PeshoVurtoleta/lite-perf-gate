@@ -17,7 +17,7 @@
  * MIT License
  */
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.4.0';
 
 import {PerformanceObserver, constants} from 'node:perf_hooks';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -75,6 +75,156 @@ let DEFAULT_FLUSH_MS = 100;
 if (typeof process !== 'undefined' && process.env && process.env.PERF_GATE_FLUSH_MS) {
     const envMs = parseInt(process.env.PERF_GATE_FLUSH_MS, 10);
     if (envMs > 0 && envMs < 60000) DEFAULT_FLUSH_MS = envMs;
+}
+
+// ---------------------------------------------------------------------------
+// Fail-closed doors (v1.4.0) -- all cold path
+// ---------------------------------------------------------------------------
+
+const NO_GC_MSG = 'lite-perf-gate: measure: globalThis.gc is not a function -- ' +
+    'the retained signal cannot be measured and the scavenge counts are unsettled. ' +
+    'Run: node --expose-gc --max-semi-space-size=4 <entry> ' +
+    '(or node --expose-gc --max-semi-space-size=4 --test <file>). ' +
+    'Pass allowNoGc: true to gate scavenges and counters only.';
+const NO_RETAINED = 'retained is ungateable without --expose-gc ' +
+    '(allowNoGc: true with an explicit maxRetainedKB) -- drop one of them.';
+const EMPTY_HINT = ' -- pass allowEmpty: true for a controls-only detector smoke run.';
+
+/**
+ * The ONE option/threshold/scenario door. measure, verdict, zgcSuite and
+ * runGate all call it; nothing bypasses it and there is no skip flag.
+ * Cold path by construction -- no caller is a hot body.
+ *
+ * @param {'measure'|'verdict'|'zgcSuite'|'runGate'} where  message prefix + mode
+ * @param {object|undefined|null} cfg   measure options / verdict thresholds / gate config
+ * @param {Scenario|null} scenario      the single scenario for measure(), else null
+ * @returns {{N: number, k: number, flushMs: number, allowNoGc: boolean, allowEmpty: boolean}}
+ * @throws {TypeError|RangeError} naming the field and the offending value
+ */
+function validateGate(where, cfg, scenario) {
+    const P = 'lite-perf-gate: ' + where + ': ';
+    if (cfg !== undefined && cfg !== null && typeof cfg !== 'object') {
+        throw new TypeError(P + 'config must be an object (got ' + typeof cfg + ')');
+    }
+    const c = cfg || {};
+
+    let N = 200000;
+    if (c.N !== undefined) {
+        if (!Number.isInteger(c.N) || c.N < 1) {
+            throw new RangeError(P + 'N must be an integer >= 1 (got ' + String(c.N) + ')');
+        }
+        N = c.N;
+    }
+    let k = 8;
+    if (c.k !== undefined) {
+        if (!Number.isInteger(c.k) || c.k < 2) {
+            throw new RangeError(P + 'k must be an integer >= 2 (got ' + String(c.k) + ')');
+        }
+        k = c.k;
+    }
+    let flushMs = DEFAULT_FLUSH_MS;
+    if (c.flushMs !== undefined) {
+        if (typeof c.flushMs !== 'number' || !isFinite(c.flushMs) || c.flushMs < 0) {
+            throw new RangeError(P + 'flushMs must be a finite number >= 0 (got ' + String(c.flushMs) + ')');
+        }
+        flushMs = c.flushMs; // 0 is legal and IS honored (PG-09)
+    }
+    if (c.allowNoGc !== undefined && c.allowNoGc !== true && c.allowNoGc !== false) {
+        throw new TypeError(P + 'allowNoGc must be true or false (got ' + String(c.allowNoGc) + ')');
+    }
+    if (c.allowEmpty !== undefined && c.allowEmpty !== true && c.allowEmpty !== false) {
+        throw new TypeError(P + 'allowEmpty must be true or false (got ' + String(c.allowEmpty) + ')');
+    }
+    const allowNoGc = c.allowNoGc === true;
+    const allowEmpty = c.allowEmpty === true;
+
+    if (where !== 'measure') {
+        if (c.maxScavenges !== undefined &&
+            (typeof c.maxScavenges !== 'number' || !isFinite(c.maxScavenges) || c.maxScavenges < 0)) {
+            throw new RangeError(P + 'maxScavenges must be a finite number >= 0 (got ' + String(c.maxScavenges) + ')');
+        }
+        if (c.maxRetainedKB !== undefined &&
+            (typeof c.maxRetainedKB !== 'number' || !isFinite(c.maxRetainedKB) || c.maxRetainedKB < 0)) {
+            throw new RangeError(P + 'maxRetainedKB must be a finite number >= 0 (got ' + String(c.maxRetainedKB) + ')');
+        }
+        if (c.counters !== undefined && c.counters !== null) {
+            if (typeof c.counters !== 'object') {
+                throw new TypeError(P + 'counters must be an object of numeric maxima (got ' + typeof c.counters + ')');
+            }
+            for (const key in c.counters) {
+                const t = c.counters[key];
+                if (typeof t !== 'number' || !isFinite(t)) {
+                    throw new RangeError(P + 'counters.' + key + ' must be a finite number (got ' + String(t) + ')');
+                }
+            }
+        }
+        if (allowNoGc && c.maxRetainedKB !== undefined) throw new RangeError(P + NO_RETAINED);
+    }
+
+    let list = null;
+    let labels = null;
+    if (where === 'measure') {
+        list = [scenario];
+        labels = ['scenario'];
+    } else if (where === 'zgcSuite' || where === 'runGate') {
+        const sc = c.scenarios;
+        if (!Array.isArray(sc)) {
+            throw new TypeError(P + 'scenarios must be an array (got ' +
+                (sc === undefined ? 'undefined' : typeof sc) + ')' + EMPTY_HINT);
+        }
+        if (sc.length === 0 && !allowEmpty) {
+            throw new RangeError(P + 'scenarios must be a non-empty array' + EMPTY_HINT);
+        }
+        list = [];
+        labels = [];
+        for (let i = 0; i < sc.length; i++) {
+            list.push(sc[i]);
+            labels.push('scenarios[' + i + ']');
+        }
+        if (c.mustFail !== undefined) {
+            if (!Array.isArray(c.mustFail)) {
+                throw new TypeError(P + 'mustFail must be an array (got ' + typeof c.mustFail + ')');
+            }
+            for (let i = 0; i < c.mustFail.length; i++) {
+                list.push(c.mustFail[i]);
+                labels.push('mustFail[' + i + ']');
+            }
+        }
+        if (c.positiveControl !== undefined) {
+            list.push(c.positiveControl);
+            labels.push('positiveControl');
+        }
+        if (c.negativeControl !== undefined) {
+            list.push(c.negativeControl);
+            labels.push('negativeControl');
+        }
+    }
+    if (list !== null) {
+        for (let i = 0; i < list.length; i++) {
+            const s = list[i];
+            const L = labels[i];
+            if (!s || typeof s !== 'object') {
+                throw new TypeError(P + L + ' must be a Scenario object (got ' +
+                    (s === null ? 'null' : typeof s) + ')');
+            }
+            if (typeof s.name !== 'string' || s.name.length === 0) {
+                throw new TypeError(P + L + '.name must be a non-empty string (got ' + String(s.name) + ')');
+            }
+            if (typeof s.setup !== 'function') {
+                throw new TypeError(P + L + ' "' + s.name + '": setup must be a function (got ' + typeof s.setup + ')');
+            }
+            if (typeof s.hot !== 'function') {
+                throw new TypeError(P + L + ' "' + s.name + '": hot must be a function (got ' + typeof s.hot + ')');
+            }
+            if (s.statsOf !== undefined && typeof s.statsOf !== 'function') {
+                throw new TypeError(P + L + ' "' + s.name + '": statsOf must be a function when present (got ' + typeof s.statsOf + ')');
+            }
+            if (s.teardown !== undefined && typeof s.teardown !== 'function') {
+                throw new TypeError(P + L + ' "' + s.name + '": teardown must be a function when present (got ' + typeof s.teardown + ')');
+            }
+        }
+    }
+    return {N: N, k: k, flushMs: flushMs, allowNoGc: allowNoGc, allowEmpty: allowEmpty};
 }
 
 // ---------------------------------------------------------------------------
@@ -136,25 +286,29 @@ async function meterOnce(scenario, iters, flushMs) {
  * allocation via scavenge scaling.
  *
  * @param {Scenario} scenario
- * @param {{ N?: number, k?: number, flushMs?: number }} [options]
- *   flushMs: how long to wait after the hot loop before reading the GC
- *   observer buffer. Default 100ms (or PERF_GATE_FLUSH_MS env var).
- *   Bump if you see zero scavenges on scenarios that should allocate --
- *   noisy CI runners may need 250-500ms.
+ * @param {{ N?: number, k?: number, flushMs?: number, allowNoGc?: boolean }} [options]
+ *   N integer >= 1 (default 200000), k integer >= 2 (default 8), flushMs a
+ *   finite number >= 0 (0 is legal and honored). flushMs is how long to wait
+ *   after the hot loop before reading the GC observer buffer. Default 100ms
+ *   (or PERF_GATE_FLUSH_MS env var). Bump if you see zero scavenges on
+ *   scenarios that should allocate -- noisy CI runners may need 250-500ms.
+ *   allowNoGc: run without --expose-gc; the retained signal is dropped and
+ *   the result carries retainedReliable: false. Bad values throw.
  * @returns {Promise<MeasureResult>}
  */
 export async function measure(scenario, options) {
-    const N = (options && options.N) || 200000;
-    const k = (options && options.k) || 8;
-    const flushMs = (options && options.flushMs) || DEFAULT_FLUSH_MS;
-    const lo = await meterOnce(scenario, N, flushMs);
-    const hi = await meterOnce(scenario, k * N, flushMs);
+    const o = validateGate('measure', options, scenario);
+    const gcOk = typeof globalThis.gc === 'function';
+    if (!gcOk && !o.allowNoGc) throw new Error(NO_GC_MSG);
+    const lo = await meterOnce(scenario, o.N, o.flushMs);
+    const hi = await meterOnce(scenario, o.k * o.N, o.flushMs);
     return {
-        name: scenario.name, N: N, k: k,
+        name: scenario.name, N: o.N, k: o.k,
         minorLo: lo.minor, minorHi: hi.minor,
         majorLo: lo.major, majorHi: hi.major,
         retainedKB_lo: lo.retainedKB, retainedKB_hi: hi.retainedKB,
-        counters_lo: lo.counters, counters_hi: hi.counters
+        counters_lo: lo.counters, counters_hi: hi.counters,
+        retainedReliable: gcOk
     };
 }
 
@@ -267,31 +421,60 @@ function validateDetector(pos, neg, maxScav) {
 /**
  * Evaluate a measurement against thresholds.
  *
+ * Thresholds are validated at config time (bad values throw); measured
+ * signals fail closed with named reasons, in this contract format:
+ *   '<signal>: not a number (fail closed)'          -- scavenges / retained / counter
+ *   '<key>: no such counter measured (statsOf keys: ...)'  -- typo'd counter key
+ *   'counters: thresholds set (...) but the scenario measured no counters
+ *    -- add statsOf (fail closed)'                   -- counters_hi === null
+ *
  * @param {MeasureResult} r
  * @param {object} [thresholds]
- * @param {number} [thresholds.maxScavenges=2]
- * @param {number} [thresholds.maxRetainedKB=64]
+ * @param {number} [thresholds.maxScavenges=2]   finite >= 0, else throws
+ * @param {number} [thresholds.maxRetainedKB=64]  finite >= 0, else throws
  * @param {Record<string, number>} [thresholds.counters]
- *   Per-counter maximum allowed delta. E.g. `{ poolGrowths: 0 }`.
+ *   Per-counter maximum allowed delta. E.g. `{ poolGrowths: 0 }`. Each
+ *   maximum must be a finite number, else throws.
  * @returns {{ pass: boolean, reasons: string[] }}
  */
 export function verdict(r, thresholds) {
+    validateGate('verdict', thresholds, null);
+    if (thresholds && thresholds.maxRetainedKB !== undefined && r && r.retainedReliable === false) {
+        throw new RangeError('lite-perf-gate: verdict: ' + NO_RETAINED);
+    }
     const maxScav = (thresholds && thresholds.maxScavenges !== undefined) ? thresholds.maxScavenges : 2;
     const maxRetKB = (thresholds && thresholds.maxRetainedKB !== undefined) ? thresholds.maxRetainedKB : 64;
     const ct = (thresholds && thresholds.counters) || null;
     const reasons = [];
 
-    if (r.minorHi > maxScav) {
+    if (typeof r.minorHi !== 'number' || r.minorHi !== r.minorHi) {
+        reasons.push('scavenges: not a number (fail closed)');
+    } else if (r.minorHi > maxScav) {
         reasons.push('scavenges: ' + r.minorHi + ' > ' + maxScav + ' (transient allocation)');
     }
-    if (r.retainedKB_hi > maxRetKB) {
-        reasons.push('retained: ' + r.retainedKB_hi.toFixed(0) + 'KB > ' + maxRetKB + 'KB');
+    if (r.retainedReliable !== false) {
+        if (typeof r.retainedKB_hi !== 'number' || r.retainedKB_hi !== r.retainedKB_hi) {
+            reasons.push('retained: not a number (fail closed)');
+        } else if (r.retainedKB_hi > maxRetKB) {
+            reasons.push('retained: ' + r.retainedKB_hi.toFixed(0) + 'KB > ' + maxRetKB + 'KB');
+        }
     }
-    if (ct !== null && r.counters_hi !== null) {
-        for (const key in ct) {
-            const actual = r.counters_hi[key];
-            if (actual !== undefined && actual > ct[key]) {
-                reasons.push(key + ': ' + actual + ' > ' + ct[key]);
+    if (ct !== null) {
+        if (r.counters_hi === null || r.counters_hi === undefined) {
+            reasons.push('counters: thresholds set (' + Object.keys(ct).join(', ') +
+                ') but the scenario measured no counters -- add statsOf (fail closed)');
+        } else {
+            const ks = Object.keys(r.counters_hi);
+            for (const key in ct) {
+                const actual = r.counters_hi[key];
+                if (actual === undefined) {
+                    reasons.push(key + ': no such counter measured (statsOf keys: ' +
+                        (ks.length ? ks.join(', ') : 'none') + ')');
+                } else if (typeof actual !== 'number' || actual !== actual) {
+                    reasons.push(key + ': not a number (fail closed)');
+                } else if (actual > ct[key]) {
+                    reasons.push(key + ': ' + actual + ' > ' + ct[key]);
+                }
             }
         }
     }
@@ -354,21 +537,34 @@ export function formatResult(r) {
  * @param {Scenario} [config.negativeControl]  Override negative control.
  * @param {Scenario[]} [config.mustFail]
  *   Scenarios that MUST trip the gate (injected allocation self-tests).
+ * @param {number} [config.flushMs]
+ *   Wait (ms) after the hot loop before reading the GC observer buffer.
+ *   Default 100 (or PERF_GATE_FLUSH_MS env var). 0 is legal and honored.
+ * @param {boolean} [config.allowEmpty=false]
+ *   Permit an empty scenarios array for a controls-only detector smoke run
+ *   -- the ONLY reason this option exists.
+ * @param {boolean} [config.allowNoGc=false]
+ *   Run without --expose-gc; the retained rule is not applied and an
+ *   explicit maxRetainedKB throws.
  */
 export function zgcSuite(config) {
-    const scenarios = config.scenarios;
-    const opts = {N: config.N || 200000, k: config.k || 8, flushMs: config.flushMs};
+    const o = validateGate('zgcSuite', config, null);
+    const cf = config || {};
+    const scenarios = cf.scenarios;
+    const opts = {N: o.N, k: o.k, flushMs: o.flushMs, allowNoGc: o.allowNoGc};
     const thresholds = {
-        maxScavenges: config.maxScavenges !== undefined ? config.maxScavenges : 2,
-        maxRetainedKB: config.maxRetainedKB !== undefined ? config.maxRetainedKB : 64,
-        counters: config.counters || null
+        maxScavenges: cf.maxScavenges !== undefined ? cf.maxScavenges : 2,
+        maxRetainedKB: o.allowNoGc ? undefined : (cf.maxRetainedKB !== undefined ? cf.maxRetainedKB : 64),
+        counters: cf.counters || null
     };
-    const posCtrl = config.positiveControl || controlPositive;
-    const negCtrl = config.negativeControl || controlNegative;
-    const mustFail = config.mustFail || [];
+    const posCtrl = cf.positiveControl || controlPositive;
+    const negCtrl = cf.negativeControl || controlNegative;
+    const mustFail = cf.mustFail || [];
     const maxScav = thresholds.maxScavenges;
 
-    test('perf-gate: detector validation (positive + negative controls)', async function () {
+    test(scenarios.length === 0
+        ? 'perf-gate: detector validation only (allowEmpty, 0 scenarios)'
+        : 'perf-gate: detector validation (positive + negative controls)', async function () {
         const pos = await measure(posCtrl, opts);
         _controlKeepAlive();
         const neg = await measure(negCtrl, opts);
@@ -407,23 +603,29 @@ export function zgcSuite(config) {
 // ---------------------------------------------------------------------------
 
 /**
- * Run a gate check and print a human-readable report. Exit codes:
- *   0 = pass, 1 = allocation detected, 2 = detector validation failed.
+ * Run a gate check and print a human-readable report.
+ *
+ * Returns `{ passed, code, results }`. `code`: 0 pass, 1 scenario or
+ * must-fail failure, 2 detector validation failed; `passed === (code === 0)`.
+ * runGate never touches `process.exitCode` -- map `result.code` to your exit
+ * code: `process.exit((await runGate(cfg)).code)`.
  *
  * @param {object} config  Same shape as zgcSuite.
- * @returns {Promise<{ passed: boolean, results: MeasureResult[] }>}
+ * @returns {Promise<{ passed: boolean, code: 0 | 1 | 2, results: MeasureResult[] }>}
  */
 export async function runGate(config) {
-    const scenarios = config.scenarios;
-    const opts = {N: config.N || 200000, k: config.k || 8, flushMs: config.flushMs};
+    const o = validateGate('runGate', config, null);
+    const cf = config || {};
+    const scenarios = cf.scenarios;
+    const opts = {N: o.N, k: o.k, flushMs: o.flushMs, allowNoGc: o.allowNoGc};
     const thresholds = {
-        maxScavenges: config.maxScavenges !== undefined ? config.maxScavenges : 2,
-        maxRetainedKB: config.maxRetainedKB !== undefined ? config.maxRetainedKB : 64,
-        counters: config.counters || null
+        maxScavenges: cf.maxScavenges !== undefined ? cf.maxScavenges : 2,
+        maxRetainedKB: o.allowNoGc ? undefined : (cf.maxRetainedKB !== undefined ? cf.maxRetainedKB : 64),
+        counters: cf.counters || null
     };
-    const posCtrl = config.positiveControl || controlPositive;
-    const negCtrl = config.negativeControl || controlNegative;
-    const mustFail = config.mustFail || [];
+    const posCtrl = cf.positiveControl || controlPositive;
+    const negCtrl = cf.negativeControl || controlNegative;
+    const mustFail = cf.mustFail || [];
     const maxScav = thresholds.maxScavenges;
     const N = opts.N;
     const k = opts.k;
@@ -440,7 +642,7 @@ export async function runGate(config) {
     const dv = validateDetector(pos, neg, maxScav);
     if (!dv.ok) {
         console.log('\n!! DETECTOR VALIDATION FAILED: ' + dv.reason);
-        return {passed: false, results: []};
+        return {passed: false, code: 2, results: []};
     }
     console.log('\ndetector validated: positive forced ' + pos.minorHi +
         ' scavenges at ' + k + 'N (' + pos.minorLo + ' at N, floor ' +
@@ -481,7 +683,11 @@ export async function runGate(config) {
 
     const passed = failures.length === 0 && mustFailOK;
     if (passed) {
-        console.log('\nZERO-GC GATE: PASS \u2014 ' + results.length + '/' + results.length + ' scenarios.');
+        if (results.length === 0) {
+            console.log('\nZERO-GC GATE: PASS \u2014 detector only (allowEmpty, 0 scenarios gated).');
+        } else {
+            console.log('\nZERO-GC GATE: PASS \u2014 ' + results.length + '/' + results.length + ' scenarios.');
+        }
     } else {
         const why = failures.map(function (f) {
             return f.name;
@@ -489,7 +695,8 @@ export async function runGate(config) {
         if (!mustFailOK) why.push('must-fail scenario was not caught');
         console.log('\nZERO-GC GATE: FAIL \u2014 ' + why.join('; '));
     }
-    return {passed: passed, results: results};
+    const code = passed ? 0 : 1;
+    return {passed: passed, code: code, results: results};
 }
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,8 @@
 //       asserts runGate self-validates (PG-01 inverted), the ring control
 //       scales at N in {50000, 200000}, and a negative measure survives a
 //       positive one in the same process (PG-10 inverted).
-//   T2  fail-closed doors        -- P2 (skipped).
+//   T2  fail-closed doors -- every door hit from OUTSIDE, each with its
+//       passing twin, plus two bare children without --expose-gc.
 //   T3  bypass corpus            -- P3 (skipped).
 //   T4  suiteGate reduction gate -- P4 (skipped).
 //   T5  footprint + 4096-cycle soak -- bounds the control's heap growth and
@@ -20,6 +21,7 @@
 // Controls for the controls (T6, env-gated -- normal run is neither):
 //   TORTURE_CONTROL=stock-control npm run torture   -> T1 MUST fail
 //   TORTURE_CONTROL=leaky-soak    npm run torture    -> T5 MUST fail
+//   TORTURE_CONTROL=no-doors      npm run torture    -> T2 MUST fail
 //
 // @zakkster/lite-gc-profiler and @zakkster/lite-leak are devDependencies,
 // never runtime deps: the library ships zero dependencies. They gate the
@@ -29,6 +31,7 @@ import {fileURLToPath} from 'node:url';
 import {GcProfiler, checkNoGc} from '@zakkster/lite-gc-profiler';
 import {createLeakTracker} from '@zakkster/lite-leak';
 import {die, note, runChild, TIER_SKIP, CONTROL} from './torture/harness.mjs';
+import {t2} from './torture/t2-doors.mjs';
 import {
     measure, suiteGate, toNDJSON,
     controlPositive, controlNegative, _controlKeepAlive
@@ -238,7 +241,7 @@ async function t5() {
 
 const TIERS = [
     {id: 'T1', name: 'detector matrix (child processes, library defaults)', run: t1},
-    {id: 'T2', name: 'fail-closed doors',        skip: 'P2'},
+    {id: 'T2', name: 'fail-closed doors (every door hit from outside)', run: t2},
     {id: 'T3', name: 'bypass corpus',            skip: 'P3'},
     {id: 'T4', name: 'suiteGate reduction gate', skip: 'P4'},
     {id: 'T5', name: 'footprint + 4096-cycle soak', run: t5}

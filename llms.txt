@@ -22,10 +22,15 @@ zgcSuite(config) -- register node:test cases.
   config.mustFail: Scenario[]    -- must trip the gate (self-test).
   config.N: number (default 200000), config.k: number (default 8).
   config.flushMs: number (default 100, or PERF_GATE_FLUSH_MS env var).
+  config.allowEmpty: boolean -- controls-only detector smoke run (scenarios [] otherwise throws).
+  config.allowNoGc: boolean -- run without --expose-gc; retained is not gated, result.retainedReliable is false.
 
-measure(scenario, {N, k, flushMs}) -- raw MeasureResult.
+measure(scenario, {N, k, flushMs, allowNoGc}) -- raw MeasureResult.
+  N integer >=1, k integer >=2, flushMs finite >=0 (0 honored); bad values throw.
 verdict(result, thresholds) -- { pass: boolean, reasons: string[] }.
-runGate(config) -- standalone report, same config as zgcSuite.
+  Bad thresholds throw. Fail-closed reasons: '<signal>: not a number (fail closed)'
+  and '<key>: no such counter measured (statsOf keys: ...)'.
+runGate(config) -- standalone report; returns {passed, code, results}, code 0 pass / 1 scenario or must-fail failure / 2 detector validation failed; never sets process.exitCode.
 
 ## Scenario shape
 
@@ -38,7 +43,9 @@ statsOf returns numeric counters; deltas are computed automatically.
 
 node --expose-gc --max-semi-space-size=4 --test your.test.mjs
 
---expose-gc is required. --max-semi-space-size=4 sharpens sensitivity.
+--expose-gc is REQUIRED: measure() throws without it, with the run command in
+the message. allowNoGc: true opts out and drops the retained signal.
+--max-semi-space-size=4 sharpens sensitivity.
 
 ## CI tuning
 

@@ -44,6 +44,19 @@ export interface MeasureResult {
     counters_lo: Record<string, number> | null;
     /** Custom counter deltas at k*N, or null if no statsOf. */
     counters_hi: Record<string, number> | null;
+    /** False when measured without --expose-gc (allowNoGc). Absent means reliable. */
+    retainedReliable?: boolean;
+}
+
+export interface MeasureOptions {
+    /** Iteration count (low). Integer >= 1. Default 200000. */
+    N?: number;
+    /** Scale factor (high = k*N). Integer >= 2. Default 8. */
+    k?: number;
+    /** Wait (ms) after the hot loop. Finite >= 0 (0 is legal and honored). Default 100. */
+    flushMs?: number;
+    /** Run without --expose-gc; retained is dropped and retainedReliable is false. */
+    allowNoGc?: boolean;
 }
 
 export interface Thresholds {
@@ -83,21 +96,37 @@ export interface GateConfig {
      * Wait (ms) after the hot loop before reading the GC observer buffer.
      * Default 100 (or PERF_GATE_FLUSH_MS env var). Bump to 250-500 on
      * noisy CI runners where event-loop stalls > 100ms may drop entries.
+     * 0 is legal and honored.
      */
     flushMs?: number;
+    /**
+     * Permit an empty scenarios array: the ONLY sanctioned empty gate, a
+     * controls-only detector smoke run. Otherwise an empty/missing/non-array
+     * scenarios throws.
+     */
+    allowEmpty?: boolean;
+    /**
+     * Run without --expose-gc. The retained rule is not applied at all (the
+     * default 64KB threshold included) and combining it with an explicit
+     * maxRetainedKB throws. Scavenges and counters still gate.
+     */
+    allowNoGc?: boolean;
 }
 
 export interface GateResult {
     passed: boolean;
+    /** 0 pass, 1 scenario or must-fail failure, 2 detector validation failed. passed === (code === 0). */
+    code: 0 | 1 | 2;
     results: MeasureResult[];
 }
 
 /**
  * Measure a scenario at N and k*N iterations. Returns raw measurements.
+ * Bad options throw; missing --expose-gc throws unless allowNoGc is set.
  */
 export function measure(
     scenario: Scenario,
-    options?: { N?: number; k?: number; flushMs?: number }
+    options?: MeasureOptions
 ): Promise<MeasureResult>;
 
 /**
@@ -123,7 +152,8 @@ export const controlNegative: Scenario;
 export function zgcSuite(config: GateConfig): void;
 
 /**
- * Standalone human-readable gate report. Returns pass/fail and raw results.
+ * Standalone human-readable gate report. Returns `{ passed, code, results }`;
+ * never touches process.exitCode -- map result.code to your exit code.
  */
 export function runGate(config: GateConfig): Promise<GateResult>;
 
