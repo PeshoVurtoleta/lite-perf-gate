@@ -99,6 +99,14 @@ retainedKB_lo are diagnostics in v1.4.0 and are never NaN-gated, so
 hand-built results carrying only the three gated fields -- which is what
 suiteGate passes to verdict() per budget -- keep working unchanged.
 
+2026-09-13 (P4, v1.6.0): the full non-finite door has landed.
+verdict()'s counter lane now fails closed on any non-finite measured
+value, not only NaN, so the Infinity / -Infinity class named above --
+and specifically the -Infinity reduced value this policy recorded as
+unreachable-until-P4 -- now produces '<key>: not a number (fail
+closed)'. The other four lanes keep the NaN-only predicate; see
+decisions/0004 D-D for the scope argument and the recorded residue.
+
 ### 3. Unknown counter keys and absent counters FAIL at verdict time
 
     '<key>: no such counter measured (statsOf keys: a, b, c)'

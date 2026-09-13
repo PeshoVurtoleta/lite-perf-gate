@@ -18,7 +18,12 @@
 //       still caught by scavenges, and C1 (600KB-string LO churn) recorded as
 //       a documented hole (decisions/0003 A4 -- fires no countable signal on
 //       this Node). All judged at DEFAULT thresholds.
-//   T4  suiteGate reduction gate -- P4 (skipped).
+//   T4  suiteGate reduction gate -- measureOps over suiteGate on a
+//       preallocated 1M-record slab with 8 budgets, gated on per-record
+//       retained bytes (1M-vs-1K difference), checkOps(maxBytesPerOp),
+//       checkNoGc(maxMajor 0, maxArrayBuffersGrowth 0), and an nsPerRecord
+//       catastrophe ceiling. Runs BEFORE T5 so no measureOps is ever in
+//       flight inside T5's GcProfiler window.
 //   T5  footprint + 4096-cycle soak -- bounds the control's heap growth and
 //       proves the churn loop retains nothing (lite-leak registration count
 //       back to 0, heap band flat, checkNoGc pass over the profiler window).
@@ -26,8 +31,9 @@
 // Controls for the controls (T6, env-gated -- normal run is neither):
 //   TORTURE_CONTROL=stock-control npm run torture   -> T1 MUST fail
 //   TORTURE_CONTROL=leaky-soak    npm run torture    -> T5 MUST fail
-//   TORTURE_CONTROL=no-doors      npm run torture    -> T2 MUST fail
-//   TORTURE_CONTROL=zero-signal   npm run torture    -> T3 MUST fail
+//   TORTURE_CONTROL=no-doors        npm run torture  -> T2 MUST fail
+//   TORTURE_CONTROL=zero-signal     npm run torture  -> T3 MUST fail
+//   TORTURE_CONTROL=allocating-visit npm run torture -> T4 MUST fail
 //
 // @zakkster/lite-gc-profiler and @zakkster/lite-leak are devDependencies,
 // never runtime deps: the library ships zero dependencies. They gate the
@@ -39,6 +45,7 @@ import {createLeakTracker} from '@zakkster/lite-leak';
 import {die, note, runChild, TIER_SKIP, CONTROL} from './torture/harness.mjs';
 import {t2} from './torture/t2-doors.mjs';
 import {t3} from './torture/t3-bypass.mjs';
+import {t4} from './torture/t4-reduction.mjs';
 import {
     measure, suiteGate, toNDJSON,
     controlPositive, controlNegative, _controlKeepAlive
@@ -267,7 +274,7 @@ const TIERS = [
     {id: 'T1', name: 'detector matrix (child processes, library defaults)', run: t1},
     {id: 'T2', name: 'fail-closed doors (every door hit from outside)', run: t2},
     {id: 'T3', name: 'bypass corpus (PG-02/PG-03 as permanent fixtures)', run: t3},
-    {id: 'T4', name: 'suiteGate reduction gate', skip: 'P4'},
+    {id: 'T4', name: 'suiteGate reduction gate (1M-record slab, 8 budgets)', run: t4},
     {id: 'T5', name: 'footprint + 4096-cycle soak', run: t5}
 ];
 

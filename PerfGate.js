@@ -27,7 +27,7 @@
  * MIT License
  */
 
-export const VERSION = '1.5.0';
+export const VERSION = '1.6.0';
 
 import {PerformanceObserver, constants} from 'node:perf_hooks';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -652,7 +652,7 @@ export function verdict(r, thresholds) {
                 if (actual === undefined) {
                     reasons.push(key + ': no such counter measured (statsOf keys: ' +
                         (ks.length ? ks.join(', ') : 'none') + ')');
-                } else if (typeof actual !== 'number' || actual !== actual) {
+                } else if (typeof actual !== 'number' || !isFinite(actual)) {
                     reasons.push(key + ': not a number (fail closed)');
                 } else if (actual > ct[key]) {
                     reasons.push(key + ': ' + actual + ' > ' + ct[key]);
@@ -935,18 +935,26 @@ export async function runGate(config) {
 
 const SPP_OP_CONT = 0x0F01;
 
-const SUITE_REDUCES = {count: 1, sum: 1, max: 1, mean: 1, last: 1};
-const SUITE_SLOTS = {t: 1, a: 2, b: 3};
+const SUITE_REDUCES = {__proto__: null, count: 1, sum: 1, max: 1, mean: 1, last: 1};
+const SUITE_SLOTS = {__proto__: null, t: 1, a: 2, b: 3};
 
 function suiteMatcher(b, i) {
     if (b.packed !== undefined) {
         if (!Number.isInteger(b.packed) || b.packed < 0 || b.packed > 0xFFFFFFFF) {
             throw new RangeError('suiteGate: budget[' + i + '] packed must be a u32');
         }
+        if ((b.packed & 0xFFFF) === SPP_OP_CONT) {
+            throw new RangeError('suiteGate: budget[' + i + '] targets CONT (0x0F01): ' +
+                'CONT records are never budget targets (SPP v1)');
+        }
         return {exact: b.packed >>> 0, op: -1};
     }
     if (b.op === undefined || !Number.isInteger(b.op) || b.op < 0 || b.op > 0xFFFF) {
         throw new RangeError('suiteGate: budget[' + i + '] needs a u16 op (with optional stream), or packed');
+    }
+    if (b.op === SPP_OP_CONT) {
+        throw new RangeError('suiteGate: budget[' + i + '] targets CONT (0x0F01): ' +
+            'CONT records are never budget targets (SPP v1)');
     }
     if (b.stream !== undefined) {
         if (!Number.isInteger(b.stream) || b.stream < 0 || b.stream > 0xFFFF) {
@@ -995,7 +1003,8 @@ export function suiteGate(config) {
     const match = new Array(n);
     const slot = new Array(n);
     const reduce = new Array(n);
-    const seen = {};
+    const minCnt = new Array(n);
+    const seen = Object.create(null);
     for (let i = 0; i < n; i++) {
         const b = budgets[i];
         if (!b || typeof b.name !== 'string' || b.name.length === 0) {
@@ -1014,9 +1023,18 @@ export function suiteGate(config) {
         if (SUITE_REDUCES[rd] === undefined) {
             throw new RangeError('suiteGate: budget "' + b.name + '" reduce must be count, sum, max, mean, or last');
         }
+        let mc = 0;
+        if (b.minCount !== undefined) {
+            if (!Number.isInteger(b.minCount) || b.minCount < 0) {
+                throw new RangeError('suiteGate: budget "' + b.name +
+                    '" minCount must be an integer >= 0 (got ' + String(b.minCount) + ')');
+            }
+            mc = b.minCount;
+        }
         match[i] = suiteMatcher(b, i);
         slot[i] = SUITE_SLOTS[sl];
         reduce[i] = rd;
+        minCnt[i] = mc;
     }
 
     const count = new Float64Array(n);
@@ -1039,14 +1057,58 @@ export function suiteGate(config) {
         }
     }
 
+    // Cold thrower (D-A / D-A'): the loop and visitChecked hold the index, so
+    // visit()'s body stays byte-identical to v1.5.0 and pays no index tax.
+    function badRecord(idx, p) {
+        throw new RangeError('suiteGate: record ' + idx + ': packed ' + String(p) +
+            ' is not a u32 -- an SPP record is 4 numbers [packed, t, a, b]');
+    }
+    // D-B (forEach lane, EVERY invocation): a slot that is not a number is a
+    // corrupt record. A native Array/TypedArray forEach binds (value, index,
+    // array) onto (packed, t, a, b); a non-native sink can also emit a non-
+    // number slot at any index (null/'3'/true finitely coerce and pass a
+    // budget silently -- 'null is not zero'). Checked on every record, not
+    // just record 0.
+    function badSlot(idx, t, a, b) {
+        const bad = typeof t !== 'number' ? 't (' + typeof t + ')'
+            : typeof a !== 'number' ? 'a (' + typeof a + ')'
+            : 'b (' + typeof b + ')';
+        throw new RangeError('suiteGate: record ' + idx + ': slot ' + bad +
+            ' is not a number -- forEach must invoke cb(packed, t, a, b) with ' +
+            'four numbers (a native Array/TypedArray forEach binds ' +
+            '(value, index, array) instead)');
+    }
+    let seenRec = 0;
+    function visitChecked(packed, t, a, b) {
+        if (packed !== packed >>> 0) badRecord(seenRec, packed);
+        if (typeof t !== 'number' || typeof a !== 'number' || typeof b !== 'number') {
+            badSlot(seenRec, t, a, b);
+        }
+        seenRec++;
+        visit(packed, t, a, b);
+    }
+
+    // D-C (cold dispatch): a typed-array view that is not a same-realm
+    // Float64Array dies before one record is read, naming its constructor.
+    // A cross-realm Float64Array fails `instanceof` and lands here too --
+    // ArrayBuffer.isView is realm-agnostic, so it is caught, not routed to the
+    // arity-collision forEach path.
+    if (ArrayBuffer.isView(source) && !(source instanceof Float64Array)) {
+        throw new RangeError('suiteGate: record 0: source is a ' +
+            source.constructor.name + ' view from another realm, or a ' +
+            'non-Float64Array view -- pass a same-realm Float64Array SPP slab ' +
+            '(a foreign or wrong-typed view forEach binds (value, index, array))');
+    }
     if (source && typeof source.forEach === 'function' && !(source instanceof Float64Array)) {
-        source.forEach(visit);
+        source.forEach(visitChecked);
     } else if (source instanceof Float64Array) {
         if (source.length % 4 !== 0) {
             throw new RangeError('suiteGate: slab length must be divisible by 4');
         }
         for (let r = 0; r < source.length; r += 4) {
-            visit(source[r], source[r + 1], source[r + 2], source[r + 3]);
+            const p = source[r];
+            if (p !== p >>> 0) badRecord(r >> 2, p);            // D-A, the measured door
+            visit(p, source[r + 1], source[r + 2], source[r + 3]);
         }
     } else {
         throw new TypeError('suiteGate: source must be a Float64Array slab or a forEach record source');
@@ -1064,19 +1126,36 @@ export function suiteGate(config) {
         else if (reduce[i] === 'mean') value = count[i] > 0 ? sum[i] / count[i] : 0;
         else value = count[i] > 0 ? last[i] : 0;
 
-        const counters = {};
+        const counters = {__proto__: null};
         counters[b.name] = value;
-        const ct = {};
+        const ct = {__proto__: null};
         ct[b.name] = b.max;
         const v = verdict(
             {name: b.name, minorHi: 0, majorHi: 0, retainedKB_hi: 0, counters_hi: counters},
             {counters: ct}
         );
-        if (!v.pass) pass = false;
-        for (let ri = 0; ri < v.reasons.length; ri++) reasons.push(v.reasons[ri]);
+        const rs = v.reasons.slice();            // cold; per budget, not per record
+        let bPass = v.pass;
+        const mc = minCnt[i];
+        if (mc > 0) {
+            // minCount is a MINIMUM on count; verdict() is max-only, so express
+            // it as a maximum of 0 on the SHORTFALL (mc - count) in a SECOND,
+            // separate verdict() call -- the fixed internal key 'shortfall'
+            // lives in its own namespace and cannot alias a user budget name.
+            const mv = verdict(
+                {name: b.name, minorHi: 0, majorHi: 0, retainedKB_hi: 0,
+                 counters_hi: {__proto__: null, shortfall: mc - count[i]}},
+                {counters: {__proto__: null, shortfall: 0}});
+            if (!mv.pass) {
+                bPass = false;
+                rs.push(b.name + ': matched ' + count[i] + ' < minCount ' + mc);
+            }
+        }
+        if (!bPass) pass = false;
+        for (let ri = 0; ri < rs.length; ri++) reasons.push(rs[ri]);
         perBudget.push({
             name: b.name, value: value, count: count[i], max: b.max,
-            pass: v.pass, reasons: v.reasons
+            minCount: mc, pass: bPass, reasons: rs
         });
     }
 

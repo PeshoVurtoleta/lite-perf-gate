@@ -1,5 +1,91 @@
 # Changelog
 
+## [1.6.0] - 2026-09-13
+
+### Added
+
+- **`minCount`, the presence assertion (the ONE surface addition).** An
+  optional per-budget integer >= 0. Without it, a budget whose `op` is a
+  typo matches zero records, reduces to 0, and passes forever -- the
+  `count: 0` was reported and nothing ever looked at it. With
+  `minCount: n`, a budget that matched fewer than `n` records FAILS with
+  `'<name>: matched <count> < minCount <n>'`. It delegates through a
+  SECOND `verdict()` call carrying the shortfall (`minCount - count`) as a
+  maximum of 0 -- one comparison authority, and `verdict()` stays
+  max-only and unaware a minimum exists (decisions/0004 D-G).
+  `SuiteBudgetResult` gains `minCount` (0 when omitted); the NDJSON budget
+  line is deliberately UNCHANGED (schema frozen).
+- **Back-compat, stated and pinned:** WITHOUT `minCount`, a zero-match
+  budget still reduces to 0, still reports `count: 0`, and still PASSES
+  (v1.1 behavior). `minCount: 0` is provably inert (result deep-equal to
+  omitting it). Presence assertions are opt-in because silence is
+  legitimately a pass for budgets like 'no gc pause over 8ms'.
+- **Torture T4 activates: the suiteGate reduction gate.** `measureOps`
+  over `suiteGate` on a preallocated 1M-record slab with 8 budgets, gated
+  on per-record retained bytes (the 1M-vs-1K `bytesPerOp` difference),
+  `checkOps(maxBytesPerOp)`, `checkNoGc(maxMajor 0, maxArrayBuffersGrowth
+  0)`, and an `nsPerRecord < 25` catastrophe ceiling. Runs BEFORE T5 so no
+  `measureOps` is ever in flight inside T5's `GcProfiler` window. A
+  `TORTURE_CONTROL=allocating-visit` lane (test-code only) drives a
+  forEach shim that RETAINS one object per record and MUST fail T4.
+
+### Changed
+
+- **PG-06: wrong-shaped record sources now THROW, naming the record
+  index.** The same over-budget record used to reach three different
+  verdicts by container: FAIL as a `Float64Array` slab (correct), PASS as
+  a `Float32Array` (native `forEach` binds `(value, index, array)` ->
+  reduced value `-Infinity`, count 1), PASS as an array of tuples
+  (count 0). Now: a slab record whose packed header is not a u32 throws a
+  `RangeError` naming the record index (D-A, in the slab driver loop);
+  a non-`Float64Array` (or cross-realm) typed-array source throws at
+  dispatch naming its constructor (D-C); a `forEach` source whose ANY
+  invocation is not four numbers throws naming the invocation index and
+  the failing slot (D-B, checked on every record -- a `null`/`'3'`/`true`
+  slot at a later record would finitely coerce and pass a budget silently
+  otherwise). A NaN slot is a number and passes D-B by design: it fails
+  closed at D-D only when the reducer PROPAGATES it (`sum`/`mean`, or
+  `max`/`last` at the extremum); under `max`/`last`/`count` a NaN
+  coexisting with finite records is silently excluded and the budget can
+  pass (count inflated, minCount satisfied), identically on both lanes --
+  a documented residue (decisions/0004).
+- **PG-06 / D-D: a reduced value that is not finite FAILS closed.**
+  `verdict()`'s counter lane predicate widened by ONE line from
+  `actual !== actual` to `!isFinite(actual)`, so `Infinity` and
+  `-Infinity` now read `'<name>: not a number (fail closed)'`. This closes
+  the `-Infinity` fail-open the P2 reviewer documented as
+  unreachable-until-P4. Public side effect: a `statsOf` counter delta of
+  `Infinity` now reads `'k: not a number (fail closed)'` instead of
+  `'k: Infinity > 0'` -- still a failure, only the wording changed. The
+  other four verdict lanes keep the NaN-only predicate (decisions/0004
+  D-D scope note).
+- **PG-12: inherited prototype keys no longer corrupt validation.**
+  `SUITE_SLOTS` / `SUITE_REDUCES` are null-proto, so `slot: 'toString'`
+  throws `slot must be` and `reduce: 'constructor'` throws `reduce must
+  be`; the duplicate-name map (`seen`) and the per-budget `counters`/`ct`
+  objects are null-proto, so a budget legitimately NAMED `toString`,
+  `hasOwnProperty`, `__proto__`, or `constructor` is legal end to end,
+  through `toNDJSON` too (verified by round-trip, incl. a name with a
+  quote and a newline).
+- **PG-13: a budget targeting CONT (0x0F01) now throws at config,** both
+  the `{op: 0x0F01}` and the packed low-16-bits forms:
+  `'CONT records are never budget targets (SPP v1)'`. `visit` skips CONT
+  by protocol, so such a budget passed vacuously forever. The v1.1
+  self-test that PINNED that vacuous pass is rewritten this release,
+  deliberately; the CONT RECORD-in-slab protocol behavior is unchanged.
+- **`visit`'s body is byte-identical to v1.5.0.** The D-A per-record door
+  lives in the slab driver loop (`if (p !== p >>> 0) badRecord(r >> 2, p)`),
+  which already holds the index; the `forEach` lane gets a separate
+  `visitChecked` wrapper. `meterOnce`, `gc2`, `zgcSuite`, `runGate` are
+  unchanged; `verdict()` changed exactly one line.
+- **T4 cost (darwin 25.6.0, Node v26.3.1, `--expose-gc
+  --max-semi-space-size=4`):** nsPerRecord p50 15.5310 (v1.5.0) ->
+  15.7637 (v1.6.0), delta +0.2327 ns/record; min delta +0.0661. The
+  v1.5.0 back-to-back noise band was 15.3637 / 15.5310 / 18.0343
+  (min/p50/max), a 2.6706 ns spread -- the door's delta is far inside it,
+  so D-A ships per record. Per-record retained bytes measured 0.00000
+  (min, noise to 0.00123), well under the 0.01 gate (decisions/0004).
+
 ## [1.5.0] - 2026-09-13
 
 ### Added

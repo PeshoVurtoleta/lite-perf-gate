@@ -83,12 +83,13 @@ export function TIER_SKIP(id, session) {
     note(id + ' skipped (' + session + ')');
 }
 
-// Sabotage selector for T6. The normal run is '' (empty). The two control
-// runs are the only other legal values; anything else is a typo and fails
-// closed rather than silently running the green path.
+// Sabotage selector for T6. The normal run is '' (empty). The control runs
+// are the only other legal values; anything else is a typo and fails closed
+// rather than silently running the green path.
 export const CONTROL = process.env.TORTURE_CONTROL || '';
 if (CONTROL !== '' && CONTROL !== 'stock-control' && CONTROL !== 'leaky-soak' &&
-    CONTROL !== 'no-doors' && CONTROL !== 'zero-signal') {
+    CONTROL !== 'no-doors' && CONTROL !== 'zero-signal' &&
+    CONTROL !== 'allocating-visit') {
     die('unknown TORTURE_CONTROL=' + CONTROL +
-        ' (expected stock-control, leaky-soak, no-doors, or zero-signal)');
+        ' (expected stock-control, leaky-soak, no-doors, zero-signal, or allocating-visit)');
 }

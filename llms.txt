@@ -90,10 +90,46 @@ node:test, node:assert/strict.
 v1.1 suiteGate(config): SPP stream-fed budgets. config.source = Float64Array
 slab or { forEach(cb(packed,t,a,b)) } (lite-scope memory sink). budgets[] =
 { name, packed? | stream?+op | op, slot: t|a|b (default a), reduce:
-count|sum|max|mean|last (default max), max }. Delegates every comparison to
-verdict(); returns { name, pass, reasons, budgets: [{name, value, count,
-max, pass, reasons}] }. Never sets exit codes; CONT records (op 0x0F01) are
-never budget targets. No lite-scope import: coupled by SPP v1 protocol only.
+count|sum|max|mean|last (default max), max, minCount? }. Delegates every
+comparison to verdict(); returns { name, pass, reasons, budgets: [{name,
+value, count, max, minCount, pass, reasons}] }. Never sets exit codes. No
+lite-scope import: coupled by SPP v1 protocol only.
+
+v1.6.0 suiteGate doors (decisions/0004; the package's ONLY hot body is visit()):
+THROWS (data-integrity refusal, the caller handed us something we cannot read):
+  - a slab record whose packed header is not a u32 -- RangeError naming the
+    record index (slab lane) or the invocation index (forEach lane);
+  - a non-Float64Array typed-array source (Float32Array etc.) -- its forEach
+    binds (value, index, array) onto (packed, t, a, b); RangeError at dispatch;
+  - a forEach source whose ANY invocation is not four numbers (checked on
+    every record, naming the invocation index and the failing slot; a native
+    Array/TypedArray forEach binds (value, index, array); a non-number slot
+    like null/'3'/true would finitely coerce and pass silently otherwise).
+    A NaN slot is a number and passes this door; it fails closed at D-D only
+    when the reducer propagates it (sum/mean, or max/last at the extremum) --
+    under max/last/count a NaN coexisting with finite records is silently
+    excluded and the budget can pass (documented residue, decisions/0004);
+  - slot/reduce set to an inherited prototype key (slot 'toString', reduce
+    'constructor') -- null-proto lookup tables close this (PG-12);
+  - a budget targeting CONT (0x0F01), op form or packed low-16-bits form:
+    'CONT records are never budget targets (SPP v1)' (PG-13);
+  - a minCount that is not an integer >= 0.
+FAILS a budget (a verdict, we read it and it is out of budget):
+  - a reduced value that is not finite (NaN, Infinity, -Infinity) ->
+    '<name>: not a number (fail closed)' (PG-06 / D-D);
+  - count < minCount -> '<name>: matched <count> < minCount <n>'.
+Budget names may be any non-empty string, including 'toString', '__proto__',
+'constructor' -- legal end to end through toNDJSON. Without minCount a
+zero-match budget still reduces to 0, reports count 0, and PASSES (back-compat).
+The D-A u32 door is measured within noise on a 1M-record slab (torture T4).
+
+verdict()'s counter lane now fails closed on ANY non-finite measured value,
+not only NaN: Infinity / -Infinity now read '<key>: not a number (fail
+closed)' too (was '<key>: Infinity > <max>'). The other four lanes keep the
+NaN-only predicate (decisions/0004 D-D). This is the reduce-time door suiteGate
+delegates through, so there is one comparison authority for the string.
+
 v1.2 toNDJSON(x, meta?): NDJSON for CI artifacts; accepts suiteGate result,
 measure result, or array; budget lines then suite-gate summary; meta merged
-per line; trailing newline.
+per line; trailing newline. The budget-line shape is frozen: minCount is on
+the in-process result object, NOT on the NDJSON line.

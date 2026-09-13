@@ -317,21 +317,28 @@ test('suiteGate: accepts a forEach record source (memory-sink shaped)', function
     assert.equal(g.budgets[0].value, 9);
 });
 
-test('suiteGate: CONT records never match budgets', function () {
-    const slab = slabOf([
+test('suiteGate: CONT budgets throw at config (op and packed forms)', function () {
+    // PG-13 inverted: a budget explicitly targeting CONT (0x0F01) is now a
+    // config error, both spellings -- op-only and packed low-16-bits.
+    const slab = slabOf([[spp(1, 0x0101), 1, 2, 0]]);
+    assert.throws(function () {
+        suiteGate({ source: slab, budgets: [{ name: 'cont', op: OP_CONT, reduce: 'count', max: 0 }] });
+    }, /CONT records are never budget targets \(SPP v1\)/);
+    assert.throws(function () {
+        suiteGate({ source: slab, budgets: [{ name: 'cont', packed: spp(1, OP_CONT), reduce: 'count', max: 0 }] });
+    }, /CONT records are never budget targets \(SPP v1\)/);
+    // The PROTOCOL behavior is unchanged: a CONT RECORD inside the slab still
+    // does not gate a legal non-CONT budget -- only TARGETING CONT is refused.
+    const withCont = slabOf([
         [spp(1, 0x0101), 1, 2, 0],
         [spp(1, OP_CONT), 500, 500, 500] // continuation payload must not gate
     ]);
     const g = suiteGate({
-        source: slab,
-        budgets: [
-            { name: 'base', op: 0x0101, reduce: 'max', max: 5 },
-            { name: 'cont', op: OP_CONT, reduce: 'count', max: 0 }
-        ]
+        source: withCont,
+        budgets: [{ name: 'base', op: 0x0101, reduce: 'max', max: 5 }]
     });
     assert.equal(g.pass, true);
-    assert.equal(g.budgets[0].value, 2);
-    assert.equal(g.budgets[1].value, 0);
+    assert.equal(g.budgets[0].value, 2); // pre-P4 number, unchanged by the CONT record
 });
 
 test('suiteGate: validation throws at init, with budget names in messages', function () {
@@ -352,6 +359,255 @@ test('suiteGate: validation throws at init, with budget names in messages', func
     assert.throws(function () {
         suiteGate({ source: new Float64Array(3), budgets: [{ name: 'x', op: 0x0100, max: 1 }] });
     }, /divisible by 4/);
+    // PG-12: inherited prototype keys are no longer accepted (null-proto tables).
+    assert.throws(function () {
+        suiteGate({ source: slab, budgets: [{ name: 'x', op: 0x0100, max: 1, slot: 'toString' }] });
+    }, /slot must be/);
+    assert.throws(function () {
+        suiteGate({ source: slab, budgets: [{ name: 'x', op: 0x0100, max: 1, reduce: 'constructor' }] });
+    }, /reduce must be/);
+    // minCount doors: -1, 1.5, NaN, '1' each throw, naming the budget.
+    const badMinCounts = [-1, 1.5, NaN, '1', Infinity];
+    for (const mc of badMinCounts) {
+        assert.throws(function () {
+            suiteGate({ source: slab, budgets: [{ name: 'q', op: 0x0100, max: 1, minCount: mc }] });
+        }, /budget "q" minCount must be an integer >= 0/,
+            'minCount ' + String(mc) + ' should throw');
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Record doors (v1.6.0, decisions/0004) -- PG-06 / PG-12 / PG-13 / minCount
+// ---------------------------------------------------------------------------
+
+// The PG-06 over-budget record, arriving in three containers.
+const OVER = [spp(2, 0x0201), 1, 12, 0]; // slot a = 12, budget max 8 -> FAIL
+const OVER_BUDGETS = [{ name: 'gc.pause.max', stream: 2, op: 0x0201, slot: 'a', reduce: 'max', max: 8 }];
+
+test('PG-06: Float64Array slab FAILS correctly (the correct verdict)', function () {
+    const g = suiteGate({ source: slabOf([OVER]), budgets: OVER_BUDGETS });
+    assert.equal(g.pass, false);
+    assert.deepEqual(g.reasons, ['gc.pause.max: 12 > 8']);
+});
+
+test('PG-06: Float32Array source throws naming record 0', function () {
+    const f32 = new Float32Array(OVER); // isView, not Float64Array -> D-C
+    assert.throws(function () {
+        suiteGate({ source: f32, budgets: OVER_BUDGETS });
+    }, function (e) {
+        return e instanceof RangeError && /record 0/.test(e.message) && /Float32Array/.test(e.message);
+    });
+});
+
+test('PG-06: tuple-array source throws naming record 0', function () {
+    const tuples = [OVER.slice()]; // Array.forEach binds (value, index, array) -> D-B
+    assert.throws(function () {
+        suiteGate({ source: tuples, budgets: OVER_BUDGETS });
+    }, function (e) { return e instanceof RangeError && /record 0/.test(e.message); });
+    // twin: a genuine 4-number forEach sink still passes untouched.
+    const sink = { forEach: function (cb) { cb(spp(1, 0x0100), 1, 3, 0); cb(spp(1, 0x0100), 2, 9, 0); } };
+    const g = suiteGate({ source: sink, budgets: [{ name: 'x', op: 0x0100, max: 10 }] });
+    assert.equal(g.pass, true);
+    assert.equal(g.budgets[0].value, 9);
+});
+
+// A forEach sink that is clean at record 0 but corrupt later. D-B checks EVERY
+// invocation, not just the first (the reviewer's blocker: a non-number slot at
+// N>0 finitely coerces or is absorbed and passes a budget silently).
+function sinkOf(records) {
+    return { forEach: function (cb) { for (const r of records) cb(r[0], r[1], r[2], r[3]); } };
+}
+
+test('D-B: a non-number slot at N>0 throws naming the invocation and the slot', function () {
+    // null at record 1, slot a, reduce max -- would be absorbed (value <= max) pre-fix.
+    assert.throws(function () {
+        suiteGate({
+            source: sinkOf([[spp(1, 0x0100), 1, 3, 0], [spp(1, 0x0100), 2, null, 0]]),
+            budgets: [{ name: 'x', op: 0x0100, slot: 'a', reduce: 'max', max: 100 }]
+        });
+    }, function (e) { return e instanceof RangeError && /record 1/.test(e.message) && /slot a/.test(e.message); });
+    // '3', true, {} each finitely coerce (3 / 1 / NaN) pre-fix -- now all throw.
+    for (const bad of ['3', true, {}]) {
+        assert.throws(function () {
+            suiteGate({
+                source: sinkOf([[spp(1, 0x0100), 1, 3, 0], [spp(1, 0x0100), 2, bad, 0]]),
+                budgets: [{ name: 'x', op: 0x0100, slot: 'a', reduce: 'sum', max: 1e9 }]
+            });
+        }, function (e) { return e instanceof RangeError && /record 1/.test(e.message) && /slot a/.test(e.message); },
+            'slot ' + String(bad) + ' should throw');
+    }
+});
+
+test('D-B: the headline case -- a null slot no longer satisfies minCount', function () {
+    // Pre-fix: two null-slot records passed with pass=true count=2. "null is not zero."
+    assert.throws(function () {
+        suiteGate({
+            source: sinkOf([[spp(1, 0x0100), 1, null, 0], [spp(1, 0x0100), 2, null, 0]]),
+            budgets: [{ name: 'x', op: 0x0100, slot: 'a', reduce: 'max', max: 100, minCount: 2 }]
+        });
+    }, function (e) { return e instanceof RangeError && /record 0/.test(e.message) && /slot a/.test(e.message); });
+});
+
+test('D-B twin: a NaN slot flows to D-D when the reducer propagates it (sum)', function () {
+    // typeof NaN === 'number', so D-B lets it through; under sum the NaN
+    // propagates into the reduced value and D-D fails it closed -- NOT a throw.
+    const g = suiteGate({
+        source: sinkOf([[spp(1, 0x0100), 1, 3, 0], [spp(1, 0x0100), 2, NaN, 0]]),
+        budgets: [{ name: 'x', op: 0x0100, slot: 'a', reduce: 'sum', max: 100 }]
+    });
+    assert.equal(g.pass, false);
+    assert.deepEqual(g.reasons, ['x: not a number (fail closed)']);
+});
+
+test('D-B residue: a NaN slot under a NON-propagating reducer (max) is silently excluded', function () {
+    // CANARY, t3a spirit. Pins the CURRENT residual signature so a future
+    // change that closes it fails here and forces decisions/0004's dated NaN
+    // residue paragraph to be updated deliberately. NaN > 5 is false, so the
+    // running max ignores the NaN record: value stays 5, count counts it (2),
+    // and the budget PASSES with minCount satisfied. Identical on the slab
+    // lane. See decisions/0004 "RESIDUE, dated 2026-09-13 (NaN under
+    // non-propagating reducers)".
+    const g = suiteGate({
+        source: sinkOf([[spp(1, 0x0100), 1, 5, 0], [spp(1, 0x0100), 2, NaN, 0]]),
+        budgets: [{ name: 'x', op: 0x0100, slot: 'a', reduce: 'max', max: 100, minCount: 2 }]
+    });
+    assert.equal(g.pass, true);
+    assert.equal(g.budgets[0].value, 5);
+    assert.equal(g.budgets[0].count, 2);
+});
+
+test('PG-06: slab with a non-u32 packed throws naming the record index', function () {
+    // Six records, corruption at record index 3.
+    for (const bad of [NaN, -1, 1.5, 2 ** 32]) {
+        const recs = [];
+        for (let i = 0; i < 6; i++) recs.push([spp(1, 0x0100), i, i, 0]);
+        recs[3][0] = bad;
+        assert.throws(function () {
+            suiteGate({ source: slabOf(recs), budgets: [{ name: 'x', op: 0x0100, max: 99 }] });
+        }, function (e) { return e instanceof RangeError && /record 3/.test(e.message); },
+            'packed ' + String(bad) + ' at record 3 should throw naming record 3');
+    }
+    // twin: 0xFFFFFFFF is a legal packed at the same slot.
+    const recs = [];
+    for (let i = 0; i < 6; i++) recs.push([spp(1, 0x0100), i, i, 0]);
+    recs[3][0] = 0xFFFFFFFF;
+    const g = suiteGate({ source: slabOf(recs), budgets: [{ name: 'x', op: 0x0100, max: 99 }] });
+    assert.equal(g.pass, true);
+    assert.equal(g.budgets[0].count, 5); // the 0xFFFFFFFF record has op 0xFFFF, does not match
+});
+
+test('PG-12: exotic budget names round-trip through suiteGate AND toNDJSON', function () {
+    const slab = slabOf([[spp(1, 0x0100), 1, 3, 0], [spp(1, 0x0100), 2, 9, 0]]);
+    const names = ['toString', 'hasOwnProperty', '__proto__', 'constructor', 'has "quote"\nand newline'];
+    const budgets = names.map(function (nm) {
+        return { name: nm, op: 0x0100, slot: 'a', reduce: 'max', max: 100 };
+    });
+    const g = suiteGate({ source: slab, name: 'exotic', budgets: budgets });
+    assert.equal(g.pass, true);
+    for (let i = 0; i < names.length; i++) {
+        assert.equal(g.budgets[i].name, names[i]);
+        assert.equal(g.budgets[i].value, 9);
+        assert.equal(g.budgets[i].count, 2);
+    }
+    const nd = toNDJSON(g, { run: 1 });
+    const lines = nd.trim().split('\n').map(function (l) { return JSON.parse(l); });
+    assert.equal(lines.length, names.length + 1); // budget lines + summary line
+    assert.ok(nd.endsWith('\n'));
+    for (let i = 0; i < names.length; i++) {
+        assert.equal(lines[i].type, 'budget');
+        assert.equal(lines[i].name, names[i]);
+        assert.equal(lines[i].value, 9);
+        assert.equal(lines[i].count, 2);
+        assert.equal(lines[i].minCount, undefined); // schema frozen: minCount NOT in the NDJSON line
+    }
+});
+
+test('PG-06/D-D: reduced -Infinity and NaN fail closed with the exact reason', function () {
+    // -Infinity reduced value under reduce max.
+    const ninf = suiteGate({
+        source: slabOf([[spp(1, 0x0100), 1, -Infinity, 0]]),
+        budgets: [{ name: 'ninf', op: 0x0100, slot: 'a', reduce: 'max', max: 100 }]
+    });
+    assert.equal(ninf.pass, false);
+    assert.deepEqual(ninf.reasons, ['ninf: not a number (fail closed)']);
+    // NaN reduced value under reduce sum.
+    const nan = suiteGate({
+        source: slabOf([[spp(1, 0x0100), 1, NaN, 0]]),
+        budgets: [{ name: 'nan', op: 0x0100, slot: 'a', reduce: 'sum', max: 100 }]
+    });
+    assert.equal(nan.pass, false);
+    assert.deepEqual(nan.reasons, ['nan: not a number (fail closed)']);
+    // No P3-lane leakage: a suiteGate failure never gains an oldgen/arrayBuffers reason.
+    assert.ok(ninf.reasons.join(' ').indexOf('oldgen') < 0);
+    assert.ok(ninf.reasons.join(' ').indexOf('arrayBuffers') < 0);
+    // twin: a finite slot value passes.
+    const ok = suiteGate({
+        source: slabOf([[spp(1, 0x0100), 1, 7, 0]]),
+        budgets: [{ name: 'ok', op: 0x0100, slot: 'a', reduce: 'max', max: 100 }]
+    });
+    assert.equal(ok.pass, true);
+});
+
+test('minCount: typo\'d op + minCount 1 fails with the matched-count reason', function () {
+    const slab = slabOf([[spp(1, 0x0100), 1, 50, 0]]);
+    const g = suiteGate({
+        source: slab,
+        budgets: [{ name: 'quiet', op: 0x0300, reduce: 'max', max: 5, minCount: 1 }]
+    });
+    assert.equal(g.pass, false);
+    assert.deepEqual(g.reasons, ['quiet: matched 0 < minCount 1']);
+    assert.equal(g.budgets[0].count, 0);
+    assert.equal(g.budgets[0].minCount, 1);
+});
+
+test('minCount: 2 matches with minCount 2 passes', function () {
+    const slab = slabOf([[spp(1, 0x0100), 1, 3, 0], [spp(1, 0x0100), 2, 4, 0]]);
+    const g = suiteGate({
+        source: slab,
+        budgets: [{ name: 'seen', op: 0x0100, reduce: 'count', max: 99, minCount: 2 }]
+    });
+    assert.equal(g.pass, true);
+    assert.deepEqual(g.reasons, []);
+    assert.equal(g.budgets[0].count, 2);
+});
+
+test('minCount: 0 is legal and inert (deep-equal to omitting it)', function () {
+    const slab = slabOf([[spp(1, 0x0100), 1, 50, 0]]);
+    const g1 = suiteGate({ source: slab, budgets: [{ name: 'q', op: 0x0300, reduce: 'max', max: 5 }] });
+    const g2 = suiteGate({ source: slab, budgets: [{ name: 'q', op: 0x0300, reduce: 'max', max: 5, minCount: 0 }] });
+    assert.deepEqual(g1, g2);
+    assert.equal(g1.pass, true);
+    assert.equal(g1.budgets[0].minCount, 0); // omitting minCount reports 0
+});
+
+test('minCount: over-max AND under-count reports both reasons, value first', function () {
+    const slab = slabOf([[spp(2, 0x0201), 1, 12, 0]]); // one match, slot a = 12
+    const g = suiteGate({
+        source: slab,
+        budgets: [{ name: 'lat', stream: 2, op: 0x0201, slot: 'a', reduce: 'max', max: 8, minCount: 2 }]
+    });
+    assert.equal(g.pass, false);
+    assert.deepEqual(g.reasons, ['lat: 12 > 8', 'lat: matched 1 < minCount 2']);
+});
+
+test('D-D: a counter delta of Infinity reads "not a number (fail closed)"', function () {
+    const inf = verdict(
+        { name: 'x', minorHi: 0, majorHi: 0, retainedKB_hi: 0, counters_hi: { g: Infinity } },
+        { counters: { g: 0 } }
+    );
+    assert.equal(inf.pass, false);
+    assert.deepEqual(inf.reasons, ['g: not a number (fail closed)']);
+    const ninf = verdict(
+        { name: 'x', minorHi: 0, majorHi: 0, retainedKB_hi: 0, counters_hi: { g: -Infinity } },
+        { counters: { g: 0 } }
+    );
+    assert.deepEqual(ninf.reasons, ['g: not a number (fail closed)']);
+    // twin: a finite delta at the limit passes.
+    const ok = verdict(
+        { name: 'x', minorHi: 0, majorHi: 0, retainedKB_hi: 0, counters_hi: { g: 0 } },
+        { counters: { g: 0 } }
+    );
+    assert.equal(ok.pass, true);
 });
 
 // ---------------------------------------------------------------------------

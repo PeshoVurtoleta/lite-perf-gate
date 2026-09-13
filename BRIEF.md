@@ -1,164 +1,143 @@
 ---
 package: "@zakkster/lite-perf-gate"
-version_target: 1.5.0
+version_target: 1.6.0
 status: in-progress
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak"]
-findings: [PG-02, PG-03]
+findings: [PG-06, PG-12, PG-13]
 depends_on: [P2]
 blocks: [P5]
 ---
 
-# lite-perf-gate -- 2.4GB of churn must not pass a zero-alloc gate (P3)
+# lite-perf-gate -- the SPP consumer must reject what it cannot read (P4)
 
 PURPOSE
-  Reproduced (ROADMAP section 2): a hot path building a 600KB string per
-  iteration churned ~2.4GB through large-object space and PASSED
-  (minorHi=2, majorHi=0, retained 15KB) -- PG-02. A path churning 2.1GB
-  of Float64Array backing stores PASSED (minor 1, major 1, retained
-  NEGATIVE) -- PG-03a. A pool retaining 16MB of buffers PASSED the 64KB
-  retained threshold (heapUsed excludes backing stores; measured delta
-  4.6KB) -- PG-03b. The one-line promise is "prove your hot path
-  allocates nothing -- or name what did"; today it cannot name anything
-  big, external, or old-gen.
+  suiteGate is the package's growth axis and its ONLY hot body, and it
+  is the one surface still fail-open after P2/P3. Reproduced (ROADMAP
+  section 2): the same over-budget record FAILS as a Float64Array slab,
+  PASSES as a Float32Array (native forEach arity collision binds
+  (value, index, array) onto (packed, t, a, b) -- reduced value
+  -Infinity, count 1), and PASSES as a plain array of tuples (count 0)
+  -- PG-06. slot: 'toString' is accepted via Object.prototype and
+  silently reads slot b; reduce: 'constructor' acts as 'last'; a budget
+  legitimately NAMED 'toString' is falsely rejected as a duplicate --
+  PG-12. A budget explicitly targeting CONT (op 0x0F01) is accepted at
+  config, can never match, and passes vacuously (the self-test PINS
+  this; changing it is deliberate) -- PG-13. Plus the one surface
+  addition this roadmap allows: minCount, the presence assertion that
+  turns "typo'd op passes forever with count 0" into a named failure.
 
-  Boundary law, decided up front: this is GATE HARDENING, not profiler
-  creep. New thresholds in the same three-line verdict vocabulary; no
-  GC-kind breakdowns in results, no per-callsite tables, no explain
-  reports. When a new signal trips, the failure message points the user
-  at lite-gc-profiler for diagnosis. That sentence ships in the reason
-  string or its docs, and the CHANGELOG repeats the boundary.
+THE DECISION (decisions/0004-record-doors.md BEFORE coding)
+  1. Record doors, cost-measured. Candidate door set:
+     (a) per-record `packed === packed >>> 0` in visit -- rejects NaN,
+         negatives, fractions, object coercions in one compare; throws
+         RangeError naming the record index (slab path) or invocation
+         index (forEach path). A corrupt RECORD is data-integrity, not
+         a budget miss: throw, never fail-a-budget.
+     (b) reduce-time non-finite door -- a budget whose reduced value is
+         not a finite number FAILS that budget closed with the P2
+         reason format ('<name>: not a number (fail closed)' -- align
+         the exact string with decisions/0002 policy 2's wording and
+         its P4-forward promise about the non-finite class: Infinity /
+         -Infinity now fail too, closing the -Infinity fail-open the
+         P2 reviewer documented as unreachable-until-P4).
+     (c) optional strict first-record shape check (t/a/b numbers).
+     The door set that ships is decided by MEASUREMENT: lite-gc-profiler
+     measureOps over suiteGate on a preallocated 1M-record slab with 8
+     budgets, before/after, must be within noise; if (a)+(b) blow the
+     budget, fall back per the ROADMAP brief (first-record strict +
+     reduce-time door) and record the measured numbers either way.
+     This measurement BECOMES torture T4 (the tier exists as a skipped
+     stub; it activates this session).
+  2. Null-prototype tables + own-key semantics (PG-12): SUITE_REDUCES /
+     SUITE_SLOTS / the `seen` duplicate map become null-proto or
+     own-property-checked; slot 'toString' throws the existing slot
+     message; reduce 'constructor' throws the reduce message; a budget
+     named 'toString'/'hasOwnProperty'/'__proto__' is legal end to end
+     (through toNDJSON too -- verify the JSON path).
+  3. CONT rejection (PG-13): suiteMatcher throws at config on
+     op === 0x0F01 (and on a packed whose low 16 bits are 0x0F01) --
+     'CONT records are never budget targets (SPP v1)'. The pinned
+     self-test changes deliberately; CHANGELOG Changed entry names it.
+  4. minCount (the ONE addition): optional integer >= 0 per budget;
+     validation fail-closed like every other budget field; failure
+     reason '<name>: matched <count> < minCount <n>'. The comparison
+     MUST delegate through verdict() (one-comparison-authority law) --
+     candidate encoding: shortfall = minCount - count when positive,
+     fed as a counter with max 0, with suiteGate mapping the verdict
+     reason back to the contract string; if the planner finds a cleaner
+     delegation that keeps verdict() max-only, take it and record why.
+     Rejected in the ledger (state it): a global requireAllMatch flag
+     (too blunt); p95/percentile reducers (allocate; sort in the hot
+     body); CONT payload decoding (SPP v2; a lite-scope bridge
+     pre-reduces wide records if that ever gates).
 
-THE CENSUS COMES FIRST (this session's anti-vibes law)
-  The naive design -- "verdict reads the majors meterOnce already
-  records" -- is FALSIFIED by the probe data: PG-02's LO churn showed
-  majorLo=0, majorHi=0 in-window on Node v26.3.1. makeGcCounter counts
-  only NODE_PERFORMANCE_GC_MINOR and _MAJOR; INCREMENTAL and WEAKCB
-  entries are dropped, and V8 may also defer LO collection past the
-  flush window entirely. Therefore, BEFORE any design freezes, the
-  planner specifies and the coder runs a KIND CENSUS probe: a raw
-  PerformanceObserver logging kind + flags + timing for every 'gc'
-  entry across the full bypass corpus --
-    C1 600KB-string LO churn        (the PG-02 probe, verbatim)
-    C2 512KB Float64Array churn     (PG-03a)
-    C3 16MB retained pool           (PG-03b)
-    C4 classic small-object churn   (the ring control, as baseline)
-    C5 pure arithmetic              (negative baseline)
-  each at the pinned deterministic window sizes the probes used, plus
-  the ambient distribution: 100 repetitions of C4/C5 recording
-  major/incremental counts and pause distribution (this also folds in
-  the T5 pause-noise question -- 11.6-12.9ms transient spikes were seen
-  under external host load in P2 verification).
-  The census numbers go INTO decisions/0003-bypass-signals.md verbatim,
-  and the signal design follows the numbers. If some bypass fires no
-  countable GC event on this Node, the decision record says exactly
-  that, and the corpus asserts what IS catchable instead of pretending.
-
-THE DECISION (decisions/0003-bypass-signals.md, drafted by planner from
-census data; the shapes to weigh)
-  1. Event-class signal: count MAJOR only, or MAJOR+INCREMENTAL as one
-     "old-gen activity" counter (WEAKCB policy stated either way)?
-     Threshold name and default (recommendation to test first:
-     maxMajors 0 -- but the census, not the recommendation, decides the
-     default and whether the counter includes incremental steps).
-     Scaling lane vs absolute: majors are rare events; absolute is
-     likely the honest lane -- decide with the census.
-  2. External signal: arrayBuffersKB delta measured at the same points
-     heapUsed already is (post-gc2 before/after, OUTSIDE the counting
-     window -- the window gains zero instructions, law). Threshold
-     maxArrayBuffersKB, default mirroring maxRetainedKB (64). Verify
-     with C2 whether TRANSIENT external churn is caught by the
-     event-class signal or needs its own lane; C3 proves the retained
-     case.
-  3. Detector integrity: every gated signal gets a control. Shape:
-     controlLarge (LO churn that must trip the chosen event-class
-     signal and/or external delta). Where it runs: always in
-     zgcSuite/runGate validation (cost ~1-2s, a gate may be thorough)
-     vs only when the new thresholds gate (they gate by default, so
-     this collapses to always) vs torture-only. Decide with measured
-     cost; record. validateDetector grows the clause; the P1 law holds:
-     ONE predicate, both call sites, no fork.
-  4. If the census shows a bypass class that NO cheap signal catches
-     in-window (deferred LO collection), the fallback design to weigh:
-     count events during the SECOND gc2 (the settle pass) into a
-     separate settle-window counter -- forced-collection work there
-     scales with what the hot loop left behind. Only if needed; only
-     with census evidence; the measurement window itself stays
-     untouched either way.
-
-TASKS (beyond the census and decision)
-  - meterOnce: capture memoryUsage().arrayBuffers alongside heapUsed at
-    the SAME two points; MeasureResult gains arrayBuffersKB_lo/_hi (and
-    whatever event-class fields the decision adds). Names are contract:
-    coordinate with formatResult, verdict reasons, d.ts, llms.txt.
-  - makeGcCounter: extend per the decision (count the chosen kinds;
-    keep MINOR/MAJOR fields back-compatible).
-  - verdict: new thresholds with P2's fail-closed semantics inherited
-    exactly (finite >= 0 at config; NaN measured fails with the P2
-    reason format; unknown keys already impossible by construction --
-    thresholds are named fields). Reason strings follow the house
-    format and the failure message for the new signals appends the
-    boundary pointer ("diagnose with lite-gc-profiler").
-  - zgcSuite/runGate: plumb thresholds + the decision-3 control;
-    validateDetector extended, still one predicate.
-  - mustFail corpus becomes torture T3 (replaces the skipped stub):
-    C1/C2/C3 as permanent fixtures that the gate must now CATCH, plus
-    C4 as the still-caught-by-scavenges control; T6-style zeroed-signal
-    shim (test-code only, never a library flag) must make T3 fail.
-  - formatResult: event-class count and external delta shown when
-    nonzero.
-  - PerfGate.d.ts + llms.txt: new fields/thresholds, minimal (P6 owns
-    the rewrite). CHANGELOG 1.5.0: the five-signal table, the census
-    table, the honest note that new defaults can fail previously-green
-    suites exactly when majors/external move -- that is the release.
-  - Three-place sync 1.4.0 -> 1.5.0.
-  - Consumer audit (grep, like P2): t1b/t1c fixtures print major
-    fields -- update expectations if the counter fields change shape;
-    T5 soak and existing fixtures must stay green under the new
-    defaults (the census C4/C5 ambient data justifies the chosen
-    defaults against exactly this).
+TASKS
+  - decisions/0004 first (door set + measured costs; the PG-12 class;
+    CONT policy; minCount encoding; rejections).
+  - suiteGate config validation hardening per decision 2/3/4; record
+    doors per decision 1; reduce-time non-finite door.
+  - Torture T4 activates: measureOps on visit over the 1M slab,
+    maxArrayBuffersGrowth 0 + stabilize deep, before/after-doors delta
+    within noise (profiler discipline: one measurement in flight;
+    sequential with T5; no measureOps inside T5's window). T6-style
+    control: a deliberately allocating visit shim (test code only)
+    must fail T4.
+  - Self-test: every PG-06/12/13 reproduction inverted (Float32Array
+    and tuple-array sources THROW naming the first bad record index;
+    'toString' budget round-trips through suiteGate AND toNDJSON;
+    slot/reduce inherited keys throw; CONT throws at config; the old
+    pinned CONT test rewritten to assert the throw); minCount positive
+    and negative cases + validation doors with twins; the -Infinity
+    reduced-value case now FAILS (the P2 reviewer's documented
+    fail-open, closed).
+  - decisions/0002 policy 2: update its P4-forward sentence to state
+    the non-finite door has now landed (keep history honest -- add a
+    dated line, do not rewrite the original).
+  - PerfGate.d.ts (SuiteBudget.minCount + doc), llms.txt (doors, what
+    throws vs what fails, minCount), CHANGELOG 1.6.0 dated 2026-09-13
+    (Changed: CONT now config-throws, non-finite reduced values now
+    fail, wrong-shaped sources now throw -- each with its PG finding;
+    Added: minCount; the T4 numbers).
+  - Three-place sync 1.5.0 -> 1.6.0. Consumer audit (grep suiteGate(
+    across test/ and demo/ -- the demo's index.html is NOT in scope,
+    note only if it calls suiteGate with shapes the doors would
+    reject).
 
 HOT PATH
-  The measurement window between makeGcCounter() and gcc.close() gains
-  ZERO instructions -- both new captures happen at the existing
-  before/after points. The observer callback may gain at most the same
-  kind-compare-and-increment shape it already has for the new kinds.
-  suiteGate untouched entirely (P4's domain). Diff proves all three.
+  visit() IS the hot body of this package. Doors land only with T4
+  measurement proof (within noise on the 1M slab, zero per-record
+  allocation, reason strings built only on failure). meterOnce, gc2,
+  verdict's existing lanes, zgcSuite/runGate: zero changed lines
+  except where minCount delegation touches suiteGate-side composition.
 
 ASSERTIONS
-  - The census table exists in decisions/0003 with real numbers from
-    this machine, kinds broken out, 100-rep ambient distribution
-    included.
-  - PG-02 probe (600KB strings): verdict FAILS naming the chosen
-    signal. PG-03a (512KB churn): FAILS naming its signal per the
-    decision. PG-03b (16MB pool): FAILS naming arrayBuffersKB. All
-    three as torture T3 fixtures, plus in-session one-off runs pasted.
-  - Negative + ring controls still validate at defaults across the
-    ambient 100-rep distribution: zero spurious failures from the new
-    signals, or the default moves and the decision file shows the
-    numbers that moved it.
-  - New thresholds inherit P2 doors: NaN threshold throws; NaN measured
-    value fails with the P2 format; {maxMajors: -1} (or the decided
-    name) throws.
-  - T3 active in torture stderr; zeroed-signal control fails T3;
-    stock-control/leaky-soak/no-doors still fail their tiers.
-  - npm test green inside 90s; torture ok inside 180s; pack --dry-run
-    7 files; ASCII; EOF newline; three-place sync 1.5.0; HEAD moves
-    only by orchestrator commits (current HEAD: 56c3af4).
+  - PG-F triple inverted: Float64Array still fails correctly;
+    Float32Array and tuple-array sources THROW with a record index.
+  - slot 'toString' throws; reduce 'constructor' throws; budget NAMED
+    'toString' works end to end incl. NDJSON lines.
+  - CONT budget (op and packed forms) throws at config.
+  - Typo'd op with minCount 1 fails with the matched-count reason;
+    without minCount it still passes reporting count 0 (back-compat,
+    documented); minCount 0 is legal and inert; minCount -1 / 1.5 /
+    NaN / '1' throw.
+  - Reduced -Infinity now fails closed with the recorded reason.
+  - T4 ACTIVE in torture stderr with the measured numbers; allocating-
+    visit control fails T4; all four earlier controls still fail their
+    tiers; npm test 10x loop all green (flake law); torture ok < 180s;
+    npm test < 90s; pack 7 files; ASCII; three-place sync 1.6.0; HEAD
+    moves only by orchestrator commits (current HEAD: effa1b5).
 
 NON-GOALS
-  No GC-kind breakdown in MeasureResult beyond the decided counter
-  fields (kind census lives in the decision record, not the API). No
-  pause budgets (gc-profiler owns pauses). No RSS/PSS lanes. No browser
-  anything. No suiteGate changes (P4). No baseline files (ledger). NO
-  git commits by subagents; NO npm publish of any kind (registry is at
-  1.3.0; 1.4.0 publish is the user's).
+  No new reduce kinds. No CONT decoding. No stream discovery. No
+  lite-scope import. No README work (P6). NO commits by subagents; NO
+  publish (registry at 1.3.0; 1.4.0/1.5.0 publishes are the user's).
 
 DONE WHEN
-  all three bypass reproductions are caught and named by torture-gated
-  fixtures; every gated signal has a control that provably fails;
-  defaults chosen from the census distribution; decision recorded with
-  the census table; five-signal story true in code, d.ts, llms.txt
+  every wrong-shape reproduction throws with an index; inherited-key
+  holes closed; minCount shipped and delegated through verdict();
+  visit measured within noise on the 1M slab; decisions 0004 recorded;
+  three-place sync 1.6.0

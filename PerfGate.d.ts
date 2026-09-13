@@ -214,6 +214,13 @@ export interface SuiteBudget {
     reduce?: 'count' | 'sum' | 'max' | 'mean' | 'last';
     /** Inclusive budget: verdict() flags value > max. */
     max: number;
+    /**
+     * Optional presence assertion. Integer >= 0 (else RangeError at config).
+     * Fails the budget when fewer records matched than minCount, with reason
+     * '<name>: matched <count> < minCount <n>'. Omitted or 0 is inert: a
+     * zero-match budget still reduces to 0 and passes (v1.1 back-compat).
+     */
+    minCount?: number;
 }
 
 export interface SuiteBudgetResult {
@@ -221,6 +228,8 @@ export interface SuiteBudgetResult {
     value: number;
     count: number;
     max: number;
+    /** The effective minCount (0 when the budget omitted it). */
+    minCount: number;
     pass: boolean;
     reasons: string[];
 }
@@ -236,7 +245,20 @@ export interface SuiteGateResult {
  * Evaluate SPP stream records against numeric budgets. Pure reduction with
  * per-budget delegation to verdict(); no measurement, no process exit
  * codes, no record emission. Wide-record CONT payloads are not budget
- * targets in v1.1 (base-record t/a/b slots only).
+ * targets (base-record t/a/b slots only).
+ *
+ * The source contract (v1.6.0 record doors, decisions/0004):
+ *  THROWS (data-integrity refusal): a slab record whose packed header is not
+ *  a u32 (RangeError naming the record index); a non-Float64Array or
+ *  cross-realm typed-array source (its forEach binds (value, index, array));
+ *  a forEach source whose ANY invocation is not four numbers (checked every
+ *  record, naming the invocation index and slot); slot/reduce
+ *  inherited-prototype keys; a budget targeting CONT (0x0F01), op or packed
+ *  form; a bad minCount.
+ *  FAILS a budget (verdict): a reduced value that is not finite ->
+ *  '<name>: not a number (fail closed)'; count < minCount ->
+ *  '<name>: matched <count> < minCount <n>'. Budget names may be any non-empty
+ *  string, including 'toString' / '__proto__' / 'constructor'.
  */
 export function suiteGate(config: {
     source: Float64Array | SppRecordSource;
