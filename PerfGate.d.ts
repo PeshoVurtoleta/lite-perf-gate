@@ -247,7 +247,7 @@ export interface SuiteGateResult {
  * codes, no record emission. Wide-record CONT payloads are not budget
  * targets (base-record t/a/b slots only).
  *
- * The source contract (v1.6.0 record doors, decisions/0004):
+ * The source contract (v1.4.0 record doors, decisions/0004):
  *  THROWS (data-integrity refusal): a slab record whose packed header is not
  *  a u32 (RangeError naming the record index); a non-Float64Array or
  *  cross-realm typed-array source (its forEach binds (value, index, array));

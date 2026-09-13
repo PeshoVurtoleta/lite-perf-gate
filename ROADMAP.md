@@ -215,6 +215,11 @@ D1 (profiler-trio compound demo; brief at
     reads best after P5's trio recipe exists.
 ```
 
+VERSION NOTE (2026-09-13): P2/P3/P4 shipped together as the consolidated
+1.4.0 release -- the registry latest before it was 1.3.0, and the interim
+targets 1.4.0/1.5.0/1.6.0 in the session briefs below were never
+published standalone. P5 targets 1.4.1, P6 targets 1.4.2.
+
 - **P0 today**: the package is lying on the registry and the local suite
   is red; nothing else ships over a failing `npm test`.
 - **P1 before everything**: every later DONE-WHEN leans on the torture
@@ -724,13 +729,13 @@ DONE WHEN
 ```
 
 ===============================================================================
-# P5 -- v1.6.1 -- COOKBOOK.md + examples/ (sibling-grade, recipes pinned)
+# P5 -- v1.4.1 -- COOKBOOK.md + examples/ (sibling-grade, recipes pinned)
 ===============================================================================
 
 ```markdown
 ---
 package: "@zakkster/lite-perf-gate"
-version_target: 1.6.1
+version_target: 1.4.1
 status: planned
 gc_maxMajor: 0
 gc_maxPauseMs: 4
@@ -791,7 +796,7 @@ TASKS
     may be smoke-level (import + one tick).
   - package.json files[] gains COOKBOOK.md (7 -> 8 files); npm pack
     --dry-run asserted.
-  - CHANGELOG 1.6.1: Added cookbook + examples; recipes-pinned note.
+  - CHANGELOG 1.4.1: Added cookbook + examples; recipes-pinned note.
 
 HOT PATH
   Docs session; the library diff is empty outside files[]. The recipe
@@ -818,13 +823,13 @@ DONE WHEN
 ```
 
 ===============================================================================
-# P6 -- v1.6.2 -- docs to the blueprint, drift-guarded
+# P6 -- v1.4.2 -- docs to the blueprint, drift-guarded
 ===============================================================================
 
 ```markdown
 ---
 package: "@zakkster/lite-perf-gate"
-version_target: 1.6.2
+version_target: 1.4.2
 status: planned
 gc_maxMajor: 0
 gc_maxPauseMs: 4
@@ -887,7 +892,7 @@ ASSERTIONS
     PerfGate.js.
   - `npm pack --dry-run`: README/CHANGELOG/llms.txt in, decisions/ and
     test/ and demo/ out.
-  - torture "ok"; npm test green; three-place sync 1.6.1.
+  - torture "ok"; npm test green; three-place sync 1.4.1.
 
 NON-GOALS
   No behavior change; the diff outside test/ contains no logic. Demo
@@ -896,7 +901,7 @@ NON-GOALS
 
 DONE WHEN
   README/llms.txt/d.ts/code agree and a test enforces it; the boundary
-  statement and cookbook shipped; /release 1.6.1 clean
+  statement and cookbook shipped; /release 1.4.1 clean
 ```
 
 ---

@@ -377,7 +377,7 @@ test('suiteGate: validation throws at init, with budget names in messages', func
 });
 
 // ---------------------------------------------------------------------------
-// Record doors (v1.6.0, decisions/0004) -- PG-06 / PG-12 / PG-13 / minCount
+// Record doors (v1.4.0, decisions/0004) -- PG-06 / PG-12 / PG-13 / minCount
 // ---------------------------------------------------------------------------
 
 // The PG-06 over-budget record, arriving in three containers.
@@ -856,7 +856,7 @@ test('runGate: code 0 and code 1 (bare children, library defaults)', function ()
 });
 
 // ---------------------------------------------------------------------------
-// Old-gen + external lanes (v1.5.0, decision 0003) -- PG-02/PG-03
+// Old-gen + external lanes (v1.4.0, decision 0003) -- PG-02/PG-03
 // ---------------------------------------------------------------------------
 
 test('verdict: maxOldGen / maxArrayBuffersKB doors throw, twins pass', function () {

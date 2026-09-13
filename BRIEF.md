@@ -1,143 +1,125 @@
 ---
 package: "@zakkster/lite-perf-gate"
-version_target: 1.6.0
+version_target: 1.4.1
 status: in-progress
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
-peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak"]
-findings: [PG-06, PG-12, PG-13]
-depends_on: [P2]
-blocks: [P5]
+peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak", "@zakkster/lite-arena", "@zakkster/lite-scope"]
+findings: []
+depends_on: [P3, P4]
+blocks: [P6, D1]
 ---
 
-# lite-perf-gate -- the SPP consumer must reject what it cannot read (P4)
+# lite-perf-gate -- the cookbook the siblings already have (P5)
 
 PURPOSE
-  suiteGate is the package's growth axis and its ONLY hot body, and it
-  is the one surface still fail-open after P2/P3. Reproduced (ROADMAP
-  section 2): the same over-budget record FAILS as a Float64Array slab,
-  PASSES as a Float32Array (native forEach arity collision binds
-  (value, index, array) onto (packed, t, a, b) -- reduced value
-  -Infinity, count 1), and PASSES as a plain array of tuples (count 0)
-  -- PG-06. slot: 'toString' is accepted via Object.prototype and
-  silently reads slot b; reduce: 'constructor' acts as 'last'; a budget
-  legitimately NAMED 'toString' is falsely rejected as a duplicate --
-  PG-12. A budget explicitly targeting CONT (op 0x0F01) is accepted at
-  config, can never match, and passes vacuously (the self-test PINS
-  this; changing it is deliberate) -- PG-13. Plus the one surface
-  addition this roadmap allows: minCount, the presence assertion that
-  turns "typo'd op passes forever with count 0" into a named failure.
+  lite-gc-profiler ships a 25-recipe COOKBOOK.md with runnable
+  examples/{react,vue,angular}.mjs and a template; lite-leak ships a
+  4-tier cookbook whose recipes are PINNED BY TEST
+  (test/cookbook.test.js, llms.txt: "19 recipes, 4 tiers, pinned ...
+  so recipes cannot rot"). lite-perf-gate -- the CI-facing member of
+  the trio -- has neither. The surface froze in P2-P4 (five signals,
+  fail-closed doors, minCount, GateResult.code, allowNoGc/allowEmpty,
+  controlLarge, dated residues); every recipe documents the FINAL API.
 
-THE DECISION (decisions/0004-record-doors.md BEFORE coding)
-  1. Record doors, cost-measured. Candidate door set:
-     (a) per-record `packed === packed >>> 0` in visit -- rejects NaN,
-         negatives, fractions, object coercions in one compare; throws
-         RangeError naming the record index (slab path) or invocation
-         index (forEach path). A corrupt RECORD is data-integrity, not
-         a budget miss: throw, never fail-a-budget.
-     (b) reduce-time non-finite door -- a budget whose reduced value is
-         not a finite number FAILS that budget closed with the P2
-         reason format ('<name>: not a number (fail closed)' -- align
-         the exact string with decisions/0002 policy 2's wording and
-         its P4-forward promise about the non-finite class: Infinity /
-         -Infinity now fail too, closing the -Infinity fail-open the
-         P2 reviewer documented as unreachable-until-P4).
-     (c) optional strict first-record shape check (t/a/b numbers).
-     The door set that ships is decided by MEASUREMENT: lite-gc-profiler
-     measureOps over suiteGate on a preallocated 1M-record slab with 8
-     budgets, before/after, must be within noise; if (a)+(b) blow the
-     budget, fall back per the ROADMAP brief (first-record strict +
-     reduce-time door) and record the measured numbers either way.
-     This measurement BECOMES torture T4 (the tier exists as a skipped
-     stub; it activates this session).
-  2. Null-prototype tables + own-key semantics (PG-12): SUITE_REDUCES /
-     SUITE_SLOTS / the `seen` duplicate map become null-proto or
-     own-property-checked; slot 'toString' throws the existing slot
-     message; reduce 'constructor' throws the reduce message; a budget
-     named 'toString'/'hasOwnProperty'/'__proto__' is legal end to end
-     (through toNDJSON too -- verify the JSON path).
-  3. CONT rejection (PG-13): suiteMatcher throws at config on
-     op === 0x0F01 (and on a packed whose low 16 bits are 0x0F01) --
-     'CONT records are never budget targets (SPP v1)'. The pinned
-     self-test changes deliberately; CHANGELOG Changed entry names it.
-  4. minCount (the ONE addition): optional integer >= 0 per budget;
-     validation fail-closed like every other budget field; failure
-     reason '<name>: matched <count> < minCount <n>'. The comparison
-     MUST delegate through verdict() (one-comparison-authority law) --
-     candidate encoding: shortfall = minCount - count when positive,
-     fed as a counter with max 0, with suiteGate mapping the verdict
-     reason back to the contract string; if the planner finds a cleaner
-     delegation that keeps verdict() max-only, take it and record why.
-     Rejected in the ledger (state it): a global requireAllMatch flag
-     (too blunt); p95/percentile reducers (allocate; sort in the hot
-     body); CONT payload decoding (SPP v2; a lite-scope bridge
-     pre-reduces wide records if that ever gates).
+HOUSE-PATTERN LAW (read before writing a single recipe)
+  The planner and coder MUST read, as pattern sources, not from memory:
+  - ../LiteGcProfiler/COOKBOOK.md (structure, voice, the graded arc,
+    recipes 23-25 framework tier) and ../LiteGcProfiler/examples/
+    (README + react.mjs + vue.mjs + angular.mjs -- note HOW they stay
+    runnable and what dependency posture they take; mirror it).
+  - ../LiteLeak/COOKBOOK.md (tier structure) and lite-leak's
+    test/cookbook.test.js (the recipe-rot pinning device -- adopt its
+    mechanism adapted to this package).
+  Do not invent a house style; both siblings already agree on one.
 
 TASKS
-  - decisions/0004 first (door set + measured costs; the PG-12 class;
-    CONT policy; minCount encoding; rejections).
-  - suiteGate config validation hardening per decision 2/3/4; record
-    doors per decision 1; reduce-time non-finite door.
-  - Torture T4 activates: measureOps on visit over the 1M slab,
-    maxArrayBuffersGrowth 0 + stabilize deep, before/after-doors delta
-    within noise (profiler discipline: one measurement in flight;
-    sequential with T5; no measureOps inside T5's window). T6-style
-    control: a deliberately allocating visit shim (test code only)
-    must fail T4.
-  - Self-test: every PG-06/12/13 reproduction inverted (Float32Array
-    and tuple-array sources THROW naming the first bad record index;
-    'toString' budget round-trips through suiteGate AND toNDJSON;
-    slot/reduce inherited keys throw; CONT throws at config; the old
-    pinned CONT test rewritten to assert the throw); minCount positive
-    and negative cases + validation doors with twins; the -Infinity
-    reduced-value case now FAILS (the P2 reviewer's documented
-    fail-open, closed).
-  - decisions/0002 policy 2: update its P4-forward sentence to state
-    the non-finite door has now landed (keep history honest -- add a
-    dated line, do not rewrite the original).
-  - PerfGate.d.ts (SuiteBudget.minCount + doc), llms.txt (doors, what
-    throws vs what fails, minCount), CHANGELOG 1.6.0 dated 2026-09-13
-    (Changed: CONT now config-throws, non-finite reduced values now
-    fail, wrong-shaped sources now throw -- each with its PG finding;
-    Added: minCount; the T4 numbers).
-  - Three-place sync 1.5.0 -> 1.6.0. Consumer audit (grep suiteGate(
-    across test/ and demo/ -- the demo's index.html is NOT in scope,
-    note only if it calls suiteGate with shapes the doors would
-    reject).
+  - COOKBOOK.md, four tiers, ~15 recipes, ASCII, added to files[]
+    (7 -> 8; npm pack asserted):
+    Tier 1 -- first verdict:
+      R0 just show me a number (measure + formatResult)
+      R1 my first gate (zgcSuite, one scenario, the run flags)
+      R2 reading a detector-validation failure (positive floor /
+         scaling / negative ceiling / large-control clause -- what
+         each clause means and what to do about it; the pretenuring
+         story from decisions/0001 in two sentences)
+      R3 thresholds you can defend (maxScavenges / maxRetainedKB /
+         maxOldGen / maxArrayBuffersKB / counters; N and k; flushMs on
+         saturated CI; what the C1 documented hole means for string-
+         heavy workloads, honestly, one paragraph)
+    Tier 2 -- engine counters (SUGGESTIONS direction 3):
+      R4 pool engine: statsOf + counters {poolGrowths: 0}
+      R5 lite-arena ECS: spawn/retire counters + zero-alloc tick
+         (lite-arena as devDep; verify its actual API from
+         ../LiteArena/llms.txt -- never from memory)
+      R6 mustFail: proving the gate can catch a planted allocation
+    Tier 3 -- streams + CI:
+      R7 suiteGate over a lite-scope memory sink (toSlab -> budgets;
+         lite-scope as devDep; API from ../LiteScope/llms.txt)
+      R8 toNDJSON as a GitHub Actions artifact + job summary (workflow
+         yaml block included, marked illustrative)
+      R9 runGate in a bare script; mapping result.code 0/1/2
+      R10 one stream, three budgets: gc-pause + leak-orphan +
+          input-latency shapes over one slab, with minCount presence
+          assertions (the SUGGESTIONS example, runnable)
+    Tier 4 -- framework integration (mirrors gc-profiler 23-25):
+      R11 Express/Fastify route-handler gating (server-side FIRST --
+          this package's home turf; follow the sibling dependency
+          posture for how the example stays runnable)
+      R12 React render loop  R13 Vue reactivity tick
+      R14 Angular change detection
+      R15 the trio recipe: perf-gate gates, gc-profiler diagnoses the
+          failure, lite-leak attributes it -- one runnable file; this
+          doubles as the D1 demo's script in prose.
+  - examples/ directory (repo-only, NEVER in files[]): one runnable
+    .mjs per Tier-4 recipe + trio.mjs + README, each with one
+    documented run command, mirroring the gc-profiler examples/
+    posture exactly (including its dependency stance).
+  - Recipe rot guard (the lite-leak device): test/cookbook.test.mjs
+    executes every recipe's code (or its examples/ twin) so a surface
+    change fails CI instead of aging the book. Heavy framework recipes
+    may be smoke-level (import + one tick). npm test stays < 90s.
+  - devDependencies: add @zakkster/lite-arena and @zakkster/lite-scope
+    (versions verified against the registry/catalog: arena ^1.9.0,
+    scope ^1.2.0); npm install; lockfile stays gitignored. Framework
+    deps follow the sibling posture -- if gc-profiler's examples avoid
+    installing frameworks, so do ours, the same way.
+  - package.json files[] gains COOKBOOK.md; CHANGELOG 1.4.1 dated
+    2026-09-13 (Added: cookbook + examples + rot guard; note the
+    recipes document the post-P4 surface).
+  - Three-place sync 1.4.0 -> 1.4.1.
 
 HOT PATH
-  visit() IS the hot body of this package. Doors land only with T4
-  measurement proof (within noise on the 1M slab, zero per-record
-  allocation, reason strings built only on failure). meterOnce, gc2,
-  verdict's existing lanes, zgcSuite/runGate: zero changed lines
-  except where minCount delegation touches suiteGate-side composition.
+  Docs session; the library diff is EMPTY (PerfGate.js untouched
+  except nothing at all -- version const only). The recipe code itself
+  obeys every law it teaches: a cookbook recipe that fails its own
+  gate is the AR-02 lesson in print, and the rot-guard test enforces
+  exactly that.
 
 ASSERTIONS
-  - PG-F triple inverted: Float64Array still fails correctly;
-    Float32Array and tuple-array sources THROW with a record index.
-  - slot 'toString' throws; reduce 'constructor' throws; budget NAMED
-    'toString' works end to end incl. NDJSON lines.
-  - CONT budget (op and packed forms) throws at config.
-  - Typo'd op with minCount 1 fails with the matched-count reason;
-    without minCount it still passes reporting count 0 (back-compat,
-    documented); minCount 0 is legal and inert; minCount -1 / 1.5 /
-    NaN / '1' throw.
-  - Reduced -Infinity now fails closed with the recorded reason.
-  - T4 ACTIVE in torture stderr with the measured numbers; allocating-
-    visit control fails T4; all four earlier controls still fail their
-    tiers; npm test 10x loop all green (flake law); torture ok < 180s;
-    npm test < 90s; pack 7 files; ASCII; three-place sync 1.6.0; HEAD
-    moves only by orchestrator commits (current HEAD: effa1b5).
+  - Every recipe R0-R15 exists in COOKBOOK.md under its tier; every
+    Tier-4 recipe has a runnable examples/ twin; examples/README
+    documents one command per example.
+  - test/cookbook.test.mjs green and genuinely load-bearing: deleting
+    one pinned recipe's code makes it fail (spot-check one, revert,
+    prove restoration).
+  - npm pack --dry-run: 8 files, COOKBOOK.md in; examples/, test/,
+    decisions/, test/probes/ out.
+  - npm test 10x loop green, single run < 90s (new total reported);
+    npm run torture untouched and still ok < 180s.
+  - PerfGate.js diff vs HEAD: VERSION line only.
+  - ASCII everywhere; three-place sync 1.4.1; no "Karadjov"; HEAD
+    (d7d1477) moves only by orchestrator commits; no publish
+    (registry: 1.3.0 latest published; the consolidated 1.4.0 pending user).
 
 NON-GOALS
-  No new reduce kinds. No CONT decoding. No stream discovery. No
-  lite-scope import. No README work (P6). NO commits by subagents; NO
-  publish (registry at 1.3.0; 1.4.0/1.5.0 publishes are the user's).
+  No README rewrite (P6). No new library surface -- a recipe that
+  needs one is a ledger finding, not a feature. No browser recipes
+  (NOT FOR stands; streams are the browser story and live in D1). No
+  demo work (D1 is its own build with its own brief).
 
 DONE WHEN
-  every wrong-shape reproduction throws with an index; inherited-key
-  holes closed; minCount shipped and delegated through verdict();
-  visit measured within noise on the 1M slab; decisions 0004 recorded;
-  three-place sync 1.6.0
+  cookbook ships in the tarball, recipes pinned by test, examples
+  runnable, siblings' bar met (graded arc + framework tier + CI tier)

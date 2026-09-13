@@ -15,7 +15,7 @@ Proves a hot path allocates nothing, or names what did. Five signals:
 
 Signals 4 and 5 are GATE signals, not a profiler: when either trips, the
 reason string names it and points at @zakkster/lite-gc-profiler for
-diagnosis. New in v1.5.0; new defaults CAN fail a previously-green suite
+diagnosis. New in v1.4.0; new defaults CAN fail a previously-green suite
 exactly when a hot path fires an old-gen collection or grows external
 memory. See decisions/0003 for the GC-kind census that chose them.
 
@@ -95,7 +95,7 @@ comparison to verdict(); returns { name, pass, reasons, budgets: [{name,
 value, count, max, minCount, pass, reasons}] }. Never sets exit codes. No
 lite-scope import: coupled by SPP v1 protocol only.
 
-v1.6.0 suiteGate doors (decisions/0004; the package's ONLY hot body is visit()):
+v1.4.0 suiteGate doors (decisions/0004; the package's ONLY hot body is visit()):
 THROWS (data-integrity refusal, the caller handed us something we cannot read):
   - a slab record whose packed header is not a u32 -- RangeError naming the
     record index (slab lane) or the invocation index (forEach lane);

@@ -27,7 +27,7 @@
  * MIT License
  */
 
-export const VERSION = '1.6.0';
+export const VERSION = '1.4.0';
 
 import {PerformanceObserver, constants} from 'node:perf_hooks';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -1058,7 +1058,7 @@ export function suiteGate(config) {
     }
 
     // Cold thrower (D-A / D-A'): the loop and visitChecked hold the index, so
-    // visit()'s body stays byte-identical to v1.5.0 and pays no index tax.
+    // visit()'s body stays byte-identical to the pre-door build and pays no index tax.
     function badRecord(idx, p) {
         throw new RangeError('suiteGate: record ' + idx + ': packed ' + String(p) +
             ' is not a u32 -- an SPP record is 4 numbers [packed, t, a, b]');

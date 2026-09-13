@@ -3,7 +3,7 @@
 
 Status: accepted
 Date: 2026-09-13
-Session: P3 (v1.5.0)
+Session: P3 (v1.5.0 interim target; shipped in the consolidated 1.4.0 release -- the interim number was never published)
 Findings: PG-02 (S1), PG-03a (S1), PG-03b (S1)
 Measured on: darwin 25.6.0, Node v26.3.1, npm 12.0.2, flags
 `--expose-gc --max-semi-space-size=4`. Every number below is pasted

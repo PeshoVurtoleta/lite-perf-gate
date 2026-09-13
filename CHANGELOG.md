@@ -1,8 +1,16 @@
 # Changelog
 
-## [1.6.0] - 2026-09-13
+## [1.4.0] - 2026-09-13
 
-### Added
+> One release, three roadmap sessions. The registry latest was 1.3.0;
+> sessions P2, P3 and P4 were developed against interim targets 1.4.0,
+> 1.5.0 and 1.6.0 -- none of which was ever published -- and ship
+> together here as 1.4.0. Session records under decisions/ keep their
+> original target numbers as history.
+
+### suiteGate record doors, inherited-key hardening, CONT rejection, minCount (session P4)
+
+#### Added
 
 - **`minCount`, the presence assertion (the ONE surface addition).** An
   optional per-budget integer >= 0. Without it, a budget whose `op` is a
@@ -29,7 +37,7 @@
   `TORTURE_CONTROL=allocating-visit` lane (test-code only) drives a
   forEach shim that RETAINS one object per record and MUST fail T4.
 
-### Changed
+#### Changed
 
 - **PG-06: wrong-shaped record sources now THROW, naming the record
   index.** The same over-budget record used to reach three different
@@ -86,9 +94,9 @@
   so D-A ships per record. Per-record retained bytes measured 0.00000
   (min, noise to 0.00123), well under the 0.01 gate (decisions/0004).
 
-## [1.5.0] - 2026-09-13
+### Bypass signals -- oldGen + arrayBuffers lanes, census-driven (session P3)
 
-### Added
+#### Added
 
 - **Two new gate signals, chosen from a GC-kind census, close the
   allocation bypasses (PG-02, PG-03).** The gate now measures FIVE
@@ -129,7 +137,7 @@
   plus a `TORTURE_CONTROL=zero-signal` lane (test-code only) that zeroes
   the two new fields in-child and MUST make T3 fail.
 
-### Changed
+#### Changed
 
 - **New defaults CAN fail a previously-green suite** -- exactly when a hot
   path fires an old-gen collection (`maxOldGen: 0`) or grows external
@@ -152,9 +160,9 @@
   before/after `memoryUsage()` points. `gc2` and `suiteGate` are
   untouched (P4 owns suiteGate).
 
-## [1.4.0] - 2026-09-13
+### Fail-closed doors -- thresholds, options, instrument, process contract (session P2)
 
-### Changed
+#### Changed
 
 - **Thresholds throw instead of passing everything (PG-04).**
   `maxScavenges` and `maxRetainedKB` must be finite numbers >= 0 and
@@ -206,7 +214,7 @@
   semantics stay in the runner layer. It now RETURNS `code` and the
   docs say "map result.code to your exit code".
 
-### Added
+#### Added
 
 - **`code: 0 | 1 | 2` on GateResult.** 0 pass, 1 a failing scenario or
   an uncaught `mustFail`, 2 detector validation failed.
@@ -239,7 +247,7 @@
   `allowNoGc` shapes, and the standing rejection of an `inconclusive`
   third verdict.
 
-### Notes
+#### Notes
 
 - Hot bodies are untouched: `meterOnce`'s measurement window (between
   `makeGcCounter()` and `gcc.close()`) and `suiteGate`'s `visit` have a
