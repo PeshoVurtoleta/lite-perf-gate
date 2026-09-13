@@ -1,6 +1,7 @@
 # lite-perf-gate -- enriched roadmap
 
-Six BRIEF sessions for one package, plus a self-torture-suite spec.
+Seven BRIEF sessions for one package, plus a self-torture-suite spec and
+a cross-package demo brief (D1, ~/LiteCatalog/builds/profiler-trio-demo.md).
 Follows the `BLUEPRINT_ROADMAP.md` method: every finding below was
 **reproduced by running the code on 2026-09-13 (darwin, Node v26.3.1,
 `--expose-gc --max-semi-space-size=4` unless stated otherwise)**, not
@@ -206,8 +207,12 @@ test/
 ## 4. Session order
 
 ```
-P0 --> P1 --> P2 --> P3 --> P5
+P0 --> P1 --> P2 --> P3 --> P5 --> P6
                \--> P4 ----/
+
+D1 (profiler-trio compound demo; brief at
+    ~/LiteCatalog/builds/profiler-trio-demo.md) unblocks after P4,
+    reads best after P5's trio recipe exists.
 ```
 
 - **P0 today**: the package is lying on the registry and the local suite
@@ -220,7 +225,10 @@ P0 --> P1 --> P2 --> P3 --> P5
   hardening reuse.
 - **P3 and P4 are independent** (meterOnce/verdict vs suiteGate config
   and visit) and may land in either order; both block P5.
-- **P5 last**: docs describe a finished surface, written once.
+- **P5 (cookbook) after P3+P4**: recipes written earlier would document
+  thresholds and doors that are about to change, and get written twice.
+- **P6 (README/docs) last**: docs describe a finished surface, written
+  once, linking the cookbook.
 
 ---
 
@@ -704,7 +712,7 @@ DONE WHEN
 ```
 
 ===============================================================================
-# P5 -- v1.6.1 -- docs to the blueprint, drift-guarded
+# P5 -- v1.6.1 -- COOKBOOK.md + examples/ (sibling-grade, recipes pinned)
 ===============================================================================
 
 ```markdown
@@ -716,9 +724,103 @@ gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak", "@zakkster/lite-arena", "@zakkster/lite-scope"]
+findings: []
+depends_on: [P3, P4]
+blocks: [P6, D1]
+---
+
+# lite-perf-gate -- the cookbook the siblings already have
+
+PURPOSE
+  lite-gc-profiler ships a 25-recipe COOKBOOK.md with runnable
+  examples/{react,vue,angular}.mjs; lite-leak ships a 4-tier cookbook
+  whose recipes are pinned by test so they cannot rot. lite-perf-gate,
+  the CI-facing member of the trio, has neither. This session writes
+  the sibling-grade cookbook AFTER the surface froze (P2 doors, P3
+  signals, P4 minCount) so every recipe shows the final API.
+
+TASKS
+  - COOKBOOK.md, four tiers, ~15 recipes, ASCII, added to files[]:
+    Tier 1 -- first verdict:
+      R0 just show me a number (measure + formatResult)
+      R1 my first gate (zgcSuite, one scenario, the run flags)
+      R2 reading a detector-validation failure (floor / scaling /
+         negative clauses -- what each means and what to do)
+      R3 thresholds you can defend (maxScavenges/maxRetainedKB/
+         maxMajors/maxArrayBuffersKB; N/k; flushMs on saturated CI)
+    Tier 2 -- engine counters (SUGGESTIONS direction 3):
+      R4 pool engine: statsOf + counters {poolGrowths: 0}
+      R5 lite-arena ECS: spawn/retire counters + zero-alloc tick
+      R6 mustFail: proving the gate can catch a planted allocation
+    Tier 3 -- streams + CI:
+      R7 suiteGate over a lite-scope memory sink (toSlab -> budgets)
+      R8 toNDJSON as a GitHub Actions artifact + job summary
+      R9 runGate in a bare script; mapping result.code 0/1/2
+      R10 one stream, three budgets: gc-pause + leak-orphan +
+          input-latency (the SUGGESTIONS example, runnable)
+    Tier 4 -- framework integration (mirrors gc-profiler 23-25):
+      R11 Express/Fastify route-handler gating (server-side first --
+          this package's home turf)
+      R12 React render loop  R13 Vue reactivity tick
+      R14 Angular change detection
+      R15 the trio recipe: perf-gate gates, gc-profiler diagnoses the
+          failure, lite-leak attributes it (SUGGESTIONS' ecosystem
+          picture as one runnable file; doubles as the D1 demo script)
+  - examples/ directory (repo-only, NEVER in files[]): express.mjs,
+    react.mjs, vue.mjs, angular.mjs, trio.mjs + README, each runnable
+    with one documented command, zero-dependency beyond devDeps
+    (framework installs documented inline, gc-profiler's examples/
+    README is the model).
+  - Recipe rot guard (the lite-leak device): test/cookbook.test.mjs
+    executes every recipe's code block (or its examples/ twin) so a
+    surface change fails CI instead of aging the book. Keep total
+    npm-test runtime inside the 90s law; heavyweight framework recipes
+    may be smoke-level (import + one tick).
+  - package.json files[] gains COOKBOOK.md (7 -> 8 files); npm pack
+    --dry-run asserted.
+  - CHANGELOG 1.6.1: Added cookbook + examples; recipes-pinned note.
+
+HOT PATH
+  Docs session; the library diff is empty outside files[]. The recipe
+  code itself obeys every law it teaches (a cookbook recipe that fails
+  its own gate is the AR-02 lesson in print).
+
+ASSERTIONS
+  - Every recipe number above exists in COOKBOOK.md; every Tier 4
+    recipe has a runnable examples/ twin.
+  - test/cookbook.test.mjs green; deleting any pinned recipe's export
+    makes it fail (spot-check one, revert).
+  - npm pack --dry-run: 8 files, COOKBOOK.md in, examples/ and test/
+    out; ASCII-only; npm test + torture green and inside time budgets.
+
+NON-GOALS
+  No README rewrite (P6). No new library surface -- a recipe that needs
+  one is a finding for the ledger, not a feature to sneak in. No
+  browser recipes (NOT FOR stands; streams are the browser story and
+  live in D1).
+
+DONE WHEN
+  cookbook shipped in the tarball, recipes pinned by test, examples
+  runnable, siblings' bar met (tiered arc + framework tier + CI tier)
+```
+
+===============================================================================
+# P6 -- v1.6.2 -- docs to the blueprint, drift-guarded
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-perf-gate"
+version_target: 1.6.2
+status: planned
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
 peers: []
 findings: [PG-15, PG-16]
-depends_on: [P3, P4]
+depends_on: [P5]
 ---
 
 # lite-perf-gate -- write the README the surface now deserves, once
@@ -726,10 +828,10 @@ depends_on: [P3, P4]
 PURPOSE
   The README predates the blueprint spine and three sessions of surface
   truth-making. Writing it earlier would have meant writing it twice
-  (the R4 lesson). It also gets the two sections this package uniquely
-  owes its ecosystem: the boundary statement (what lives here vs
+  (the R4 lesson). It also gets the section this package uniquely owes
+  its ecosystem: the boundary statement (what lives here vs
   lite-gc-profiler vs lite-leak -- SUGGESTIONS.md's table, made
-  canonical) and the engine-counter cookbook (SUGGESTIONS direction 3).
+  canonical). The cookbook itself shipped in P5; this session links it.
 
 TASKS
   - Rebuild README.md on the LiteSepforge spine, in order: title +
@@ -750,10 +852,9 @@ TASKS
     torture); What this is not (the boundary law verbatim: not a
     profiler, not a leak classifier, not a benchmark runner -- with the
     "reach for" pointers); Ecosystem; License. ASCII-only.
-  - Engine-counter cookbook subsection (SUGGESTIONS 3): two recipes --
-    a pool-based engine exposing poolGrowths/totalAllocations, and an
-    ECS arena exposing spawn/retire counters -- each ending in the
-    one-line counters threshold that gates it.
+  - Link COOKBOOK.md (shipped in P5) from the README's positioning H2
+    and Testing sections; the README's own examples stay quick-start
+    sized and defer depth to the cookbook.
   - llms.txt: five signals, all thresholds, all doors (what throws),
     minCount, allowNoGc/allowEmpty, the control floors. This is the
     file sibling packages read; it must be complete enough to write a
@@ -790,7 +891,9 @@ DONE WHEN
 
 ## 6. How to run it
 
-In order: P0 today, then P1 -> P2 -> {P3, P4} -> P5.
+In order: P0 today, then P1 -> P2 -> {P3, P4} -> P5 -> P6; the D1
+compound demo (~/LiteCatalog/builds/profiler-trio-demo.md) unblocks
+after P4 and reads best after P5.
 `status: planned -> shipped` after each `/release`. Author the brief in
 the package, then planner -> coder -> reviewer -> qa, then `/release`.
 Reviewer REJECTED goes back to coder, never forward.
