@@ -1,5 +1,86 @@
 # Changelog
 
+## [1.3.0] - 2026-09-13
+
+### Changed
+
+- **Positive control is a bounded 64-slot ring, not a grow-forever sink.**
+  The stock control stored every `{x,y,z,w}` into a module-level array to
+  defeat escape analysis -- but 100% survival trained V8's allocation-site
+  pretenuring, so the site was promoted to old space and the scavenge signal
+  died. At LIBRARY DEFAULTS in a fresh process the count went DOWN as the
+  work went UP and `runGate` refused with DETECTOR VALIDATION FAILED (PG-01).
+  The control now writes `__posRing[i & 63] = {x,y,z,w}`: the store still
+  escapes, but every object is overwritten within 64 iterations, so the
+  site's survival ratio stays ~0. Measured, fresh process, N=200000 k=8,
+  `--expose-gc --max-semi-space-size=4`:
+
+  | control                    | minorLo | minorHi | majorHi | retainedKB_hi |
+  | -------------------------- | ------- | ------- | ------- | ------------- |
+  | stock grow-forever sink    | 2       | 1       | 1       | ~100784       |
+  | 64-slot ring (this release)| 2       | 21      | 0       | ~11           |
+
+  See `decisions/0001-positive-control.md`.
+- **Footprint is bounded by construction.** One `measure(controlPositive)`
+  at defaults grew the post-gc heap ~113MB with the stock sink and poisoned
+  every later measurement in the same process (a subsequent negative control
+  then forced 6 scavenges against a ceiling of 2, PG-10). At most 64 objects
+  (~3KB) are retained now; post-gc growth is sub-megabyte.
+- **`_controlKeepAlive()` returns ring occupancy (0..64), not a push count.**
+  Its purpose -- a read that touches every slot so V8 cannot sink the stores
+  -- is unchanged; it no longer returns a monotonically growing number.
+- **Detector-validation margin is decoupled from the consumer's budget.**
+  The old predicate `pos.minorHi > maxScavenges + 3` coupled the evidence
+  the instrument owes to the budget the user set for their own code
+  (`maxScavenges: 40` silently demanded a 43-scavenge control). One shared
+  predicate `validateDetector(pos, neg, maxScav)` now governs both zgcSuite
+  and runGate, with its own constants: `CONTROL_FLOOR = 6` (positive control
+  scavenges at k*N), `CONTROL_SCALE = 2` (minorHi >= 2*minorLo when
+  minorLo > 0), `CONTROL_NEG_CEIL = 2` (negative ceiling, tightened by
+  `min(maxScavenges, 2)`). Every clause is written `!(x >= limit)` so a NaN
+  count fails closed. A consumer at the default `maxScavenges: 2` sees the
+  identical effective floor.
+- **One detector-validation test replaces two.** zgcSuite measures positive
+  then negative in one test so the negative doubles as the in-suite
+  poisoning regression.
+
+### Added
+
+- **Torture suite** (`npm run torture`, `test/torture.mjs` +
+  `test/torture/`): T1 detector matrix (bare child processes at library
+  defaults -- the PG-01 reproduction inverted, ring scaling at N in
+  {50000, 200000}, and the PG-10 poisoning regression) and T5 footprint +
+  4096-cycle soak (bounded control footprint, lite-leak registration count
+  back to 0, flat heap band, `checkNoGc` pass over the profiler window).
+  T2/T3/T4 register as named skipped tiers for P2/P3/P4. Two env-gated
+  controls-for-the-controls prove the tiers can fail:
+  `TORTURE_CONTROL=stock-control` fails T1, `TORTURE_CONTROL=leaky-soak`
+  fails T5.
+- **Two child-process self-tests** (PG-15): zgcSuite is green end-to-end at
+  library defaults, and goes red (DETECTOR VALIDATION FAILED / need >=6)
+  when the positive control is sabotaged with the stock grow-forever shape.
+  26 -> 28 self-tests.
+- **devDependencies** `@zakkster/lite-gc-profiler ^1.16.0` and
+  `@zakkster/lite-leak ^1.10.0` -- dev-only, for the torture suite; the
+  library still ships zero runtime dependencies and `files[]` is unchanged.
+- **`.gitignore`** for `/node_modules/`, `/package-lock.json`, `.DS_Store`
+  (the lockfile is not committed in this suite).
+
+### Notes
+
+- Every number above was measured on a single machine: darwin, Node
+  v26.3.1, `--expose-gc --max-semi-space-size=4`, reproduced twice. There
+  is no nvm here; the multi-Node matrix is a CI intent, not a claim this
+  release verifies. `CONTROL_FLOOR = 6` absorbs the large-semi-space
+  direction (a default 16MB young generation buys ~5-6 scavenges instead of
+  21); scavenge count is a function of bytes allocated per semi-space byte,
+  not of CPU speed.
+- No verdict changes (P2), no new signals such as maxMajors or external
+  deltas (P3), no suiteGate work (P4), no README rewrite (P5). The
+  measurement window in `meterOnce` and suiteGate's visit are byte-identical
+  to 1.2.2.
+- The demo `<title>` no longer embeds a version; it went stale every release.
+
 ## [1.2.2] - 2026-09-13
 
 - **Version truth**: `VERSION` reads `1.2.2` and agrees with

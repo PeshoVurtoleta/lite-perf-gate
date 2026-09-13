@@ -17,7 +17,7 @@
  * MIT License
  */
 
-export const VERSION = '1.2.2';
+export const VERSION = '1.3.0';
 
 import {PerformanceObserver, constants} from 'node:perf_hooks';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -162,22 +162,48 @@ export async function measure(scenario, options) {
 // Built-in controls
 // ---------------------------------------------------------------------------
 
-const __posKeep = [];
+// The positive control must defeat TWO V8 adaptations at once:
+//   1. escape analysis / scalar replacement -- an object that never escapes
+//      is never allocated, so the control must store it somewhere real;
+//   2. allocation-site pretenuring -- a site whose objects keep SURVIVING is
+//      promoted to old space, and the scavenge signal dies (PG-01).
+// A 64-slot ring satisfies both: the store escapes, and every object is
+// overwritten within 64 iterations, so the site's survival ratio stays ~0.
+// Measured, fresh process, N=200000 k=8, --expose-gc --max-semi-space-size=4:
+// minorLo=2 minorHi=21 majorHi=0 retainedKB_hi~11 (stock sink: 2 -> 1, ~100MB).
+// See decisions/0001-positive-control.md.
 
-/** @internal -- reference to keep the positive-control sink alive. */
+const CONTROL_RING_SIZE = 64;
+const CONTROL_RING_MASK = CONTROL_RING_SIZE - 1;
+const __posRing = new Array(CONTROL_RING_SIZE).fill(null);
+
+/**
+ * @internal -- the read that keeps the positive-control ring alive.
+ * Touches every slot so V8 cannot sink or eliminate the stores in
+ * controlPositive.hot, and returns the live occupancy. The sink is bounded
+ * by construction: after any number of iterations at most 64 objects (~3KB)
+ * are retained, so one measurement can never poison the next (PG-10).
+ * @returns {number} occupied ring slots, 0..64
+ */
 export function _controlKeepAlive() {
-    return __posKeep.length;
+    let live = 0;
+    for (let i = 0; i < CONTROL_RING_SIZE; i++) {
+        const o = __posRing[i];
+        if (o !== null && o.w >= o.x) live++;
+    }
+    return live;
 }
 
-/** Positive control: allocates a heap object per iteration. */
+/** Positive control: allocates one short-lived heap object per iteration. */
 export const controlPositive = {
-    name: 'CONTROL+ (allocates {x,y,z,w} per iter)',
+    name: 'CONTROL+ ({x,y,z,w} per iter into a 64-slot ring)',
     setup: function () {
         return {};
     },
     hot: function (_s, n) {
-        for (let i = 0; i < n; i++) __posKeep.push({x: i, y: i + 1, z: i + 2, w: i + 3});
-        if (__posKeep.length > 3000000) __posKeep.length = 0;
+        for (let i = 0; i < n; i++) {
+            __posRing[i & CONTROL_RING_MASK] = {x: i, y: i + 1, z: i + 2, w: i + 3};
+        }
     }
 };
 
@@ -193,6 +219,46 @@ export const controlNegative = {
         s.acc = a;
     }
 };
+
+// ---------------------------------------------------------------------------
+// Detector validation
+// ---------------------------------------------------------------------------
+
+// Detector-validation floors, DECOUPLED from the consumer's scenario
+// thresholds on purpose: the evidence the instrument owes does not get
+// cheaper because a consumer raised maxScavenges. decisions/0001.
+const CONTROL_FLOOR = 6;     // positive control: scavenges at k*N
+const CONTROL_SCALE = 2;     // positive control: minorHi / minorLo
+const CONTROL_NEG_CEIL = 2;  // negative control: hard ceiling
+
+/**
+ * The ONE detector-validation predicate. zgcSuite and runGate both call it;
+ * neither forks it. Comparisons are written so a NaN count fails closed.
+ *
+ * @param {MeasureResult} pos  positive-control measurement
+ * @param {MeasureResult} neg  negative-control measurement
+ * @param {number} maxScav     suite scavenge threshold (tightens neg only)
+ * @returns {{ ok: boolean, reason: string | null }}
+ */
+function validateDetector(pos, neg, maxScav) {
+    const flags = ' Run with --expose-gc --max-semi-space-size=4.';
+    if (!(pos.minorHi >= CONTROL_FLOOR)) {
+        return {ok: false, reason: 'positive control forced ' + pos.minorHi +
+            ' scavenges at ' + pos.k + 'N (need >=' + CONTROL_FLOOR + ').' + flags};
+    }
+    if (pos.minorLo > 0 && !(pos.minorHi >= CONTROL_SCALE * pos.minorLo)) {
+        return {ok: false, reason: 'positive control did not scale: ' +
+            pos.minorLo + ' at N, ' + pos.minorHi + ' at ' + pos.k +
+            'N (need >=' + (CONTROL_SCALE * pos.minorLo) + ').' + flags};
+    }
+    const negCeil = maxScav < CONTROL_NEG_CEIL ? maxScav : CONTROL_NEG_CEIL;
+    if (!(neg.minorHi <= negCeil)) {
+        return {ok: false, reason: 'negative control forced ' + neg.minorHi +
+            ' scavenges (need <=' + negCeil + ') -- noisy process, or a prior ' +
+            'measurement poisoned it.' + flags};
+    }
+    return {ok: true, reason: null};
+}
 
 // ---------------------------------------------------------------------------
 // Verdict
@@ -302,18 +368,13 @@ export function zgcSuite(config) {
     const mustFail = config.mustFail || [];
     const maxScav = thresholds.maxScavenges;
 
-    test('perf-gate: detector sees a known allocation (positive control)', async function () {
-        const r = await measure(posCtrl, opts);
+    test('perf-gate: detector validation (positive + negative controls)', async function () {
+        const pos = await measure(posCtrl, opts);
         _controlKeepAlive();
-        assert.ok(r.minorHi > maxScav + 3,
-            'positive control should force scavenges, saw ' + r.minorHi +
-            ' (need >' + (maxScav + 3) + '). Run with --expose-gc --max-semi-space-size=4.');
-    });
-
-    test('perf-gate: detector reads ~0 for a non-allocating loop (negative control)', async function () {
-        const r = await measure(negCtrl, opts);
-        assert.ok(r.minorHi <= maxScav,
-            'no-op control forced ' + r.minorHi + ' scavenges (need <=' + maxScav + ')');
+        const neg = await measure(negCtrl, opts);
+        const v = validateDetector(pos, neg, maxScav);
+        assert.ok(v.ok, 'DETECTOR VALIDATION FAILED: ' + v.reason +
+            '\n  ' + formatResult(pos) + '\n  ' + formatResult(neg));
     });
 
     for (let i = 0; i < scenarios.length; i++) {
@@ -376,14 +437,14 @@ export async function runGate(config) {
     console.log(formatResult(neg));
     _controlKeepAlive();
 
-    if (pos.minorHi <= maxScav + 3 || neg.minorHi > maxScav) {
-        console.log('\n!! DETECTOR VALIDATION FAILED: positive ' + pos.minorHi +
-            ' (need >' + (maxScav + 3) + '), negative ' + neg.minorHi +
-            ' (need <=' + maxScav + ').');
+    const dv = validateDetector(pos, neg, maxScav);
+    if (!dv.ok) {
+        console.log('\n!! DETECTOR VALIDATION FAILED: ' + dv.reason);
         return {passed: false, results: []};
     }
     console.log('\ndetector validated: positive forced ' + pos.minorHi +
-        ' scavenges, negative forced ' + neg.minorHi + '.\n');
+        ' scavenges at ' + k + 'N (' + pos.minorLo + ' at N, floor ' +
+        CONTROL_FLOOR + '), negative forced ' + neg.minorHi + '.\n');
 
     console.log('== scenarios ==');
     const results = [];

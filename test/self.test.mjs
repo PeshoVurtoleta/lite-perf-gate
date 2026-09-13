@@ -1,16 +1,28 @@
 // Self-test for @zakkster/lite-perf-gate.
 // Run: node --expose-gc --max-semi-space-size=4 --test test/self.test.mjs
 //
-// This file tests the HARNESS, not a consumer engine. It proves:
-//   1. The positive control forces scavenges (detector works).
-//   2. The negative control forces ~0 scavenges (no false positives).
-//   3. verdict() returns pass for a clean result.
-//   4. verdict() returns fail with reasons for a dirty result.
-//   5. zgcSuite registers tests against the built-in controls.
+// This file tests the HARNESS API, not a consumer engine. It proves:
+//   1. VERSION agrees with package.json (triple-bump discipline).
+//   2. The positive control forces scavenges and the negative control
+//      forces ~0 (detector works, no false positives).
+//   3. verdict() passes clean results and fails dirty ones with named
+//      reasons (scavenge / retained / counter / multiple).
+//   4. formatResult() and measure() return the documented shapes, including
+//      statsOf counter deltas and the flushMs plumbing.
+//   5. suiteGate() reduces SPP slabs to per-budget verdicts, and toNDJSON()
+//      serialises both result kinds.
+//   6. zgcSuite() is green end-to-end at library defaults, and goes red when
+//      the positive control is sabotaged (both via bare child processes).
+//
+// runGate's detector self-validation at library defaults is covered by
+// test/torture.mjs T1 (bare child processes), not here: under `node --test`
+// the runner's own allocations mask a broken control.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
     measure, verdict, formatResult,
     controlPositive, controlNegative,
@@ -372,4 +384,60 @@ test('toNDJSON: array input mixes result kinds; meta never overrides core fields
 
 test('toNDJSON: rejects unknown row shapes', function () {
     assert.throws(function () { toNDJSON({ nope: 1 }); }, TypeError);
+});
+
+// ---------------------------------------------------------------------------
+// zgcSuite end-to-end (child processes) -- PG-15
+// ---------------------------------------------------------------------------
+
+function runFixture(name) {
+    const abs = fileURLToPath(new URL('./fixtures/' + name, import.meta.url));
+    return spawnSync(
+        process.execPath,
+        ['--expose-gc', '--max-semi-space-size=4', '--test', abs],
+        { encoding: 'utf8', timeout: 60000 }
+    );
+}
+
+test('zgcSuite is green end-to-end at library defaults (child process)', function () {
+    const r = runFixture('default-suite.test.mjs');
+    assert.equal(r.status, 0,
+        'default zgcSuite should pass at library defaults\n' + r.stdout + r.stderr);
+});
+
+// The sabotaged control (stock grow-forever shape) is detected DETERMINISTICALLY
+// only OUTSIDE a test runner: under `node --test` the runner's own allocations
+// land inside the measurement window and scale with its length, masking a
+// pretenured control (decisions/0001 -- the reason T1 spawns bare children,
+// and the reason this proof does NOT run zgcSuite under --test). It exercises
+// the SHARED validateDetector predicate -- the same code zgcSuite's detector
+// test calls -- via runGate in a bare child process, which has no harness
+// allocations in the window and so rejects the sabotage every run. The
+// `.test.mjs` fixture's own red path is checked directly (not under a parent's
+// load) in the release checklist.
+const PERFGATE_URL = pathToFileURL(fileURLToPath(new URL('../PerfGate.js', import.meta.url))).href;
+
+test('runGate goes red when the positive control is sabotaged (bare child)', function () {
+    const code = [
+        'import { runGate } from ' + JSON.stringify(PERFGATE_URL) + ';',
+        'const sink = [];',
+        'const stock = { name: "stock", setup: () => ({}), hot: (_s, n) => {',
+        '  for (let i = 0; i < n; i++) sink.push({ x: i, y: i + 1, z: i + 2, w: i + 3 });',
+        '  if (sink.length > 3000000) sink.length = 0;',
+        '} };',
+        // N is pinned SMALL for the same reason as test/fixtures/sabotaged-suite.test.mjs:
+        // a short window lets pretenuring drop the control's minorHi below CONTROL_FLOOR
+        // deterministically, whereas at library defaults the pretenured site intermittently
+        // clears the floor and the scale clause under load (~31% false-green observed).
+        'const out = await runGate({ scenarios: [], positiveControl: stock, N: 20000, k: 8 });',
+        'process.exit(out.passed ? 0 : 1);'
+    ].join('\n');
+    const r = spawnSync(
+        process.execPath,
+        ['--expose-gc', '--max-semi-space-size=4', '--input-type=module', '-e', code],
+        { encoding: 'utf8', timeout: 60000 }
+    );
+    assert.notEqual(r.status, 0, 'sabotaged runGate must fail:\n' + r.stdout + r.stderr);
+    assert.match(r.stdout, /DETECTOR VALIDATION FAILED/);
+    assert.match(r.stdout, /need >=6/);
 });
