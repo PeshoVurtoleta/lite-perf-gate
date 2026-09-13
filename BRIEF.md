@@ -1,163 +1,164 @@
 ---
 package: "@zakkster/lite-perf-gate"
-version_target: 1.4.0
+version_target: 1.5.0
 status: in-progress
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak"]
-findings: [PG-04, PG-05, PG-08, PG-09, PG-11, PG-14]
-depends_on: [P1]
-blocks: [P3, P4]
+findings: [PG-02, PG-03]
+depends_on: [P2]
+blocks: [P5]
 ---
 
-# lite-perf-gate -- a gate that can be talked past is not a gate (P2)
+# lite-perf-gate -- 2.4GB of churn must not pass a zero-alloc gate (P3)
 
 PURPOSE
-  Six reproduced ways to get a green verdict (or a meaningless one)
-  without a sound measurement, all documented with probes in ROADMAP.md
-  section 2: NaN thresholds pass everything (PG-04); NaN measurements
-  pass (PG-04); a typo'd counter-threshold key gates nothing forever
-  (PG-05); an empty scenario list is a green suite (PG-08); N=-1 makes
-  the positive control itself pass as zero-alloc, k=0.5 inverts the
-  scaling design, negative flushMs collapses the observer window
-  (PG-09); a missing --expose-gc silently judges with a dead instrument
-  (PG-11); and runGate's docstring promises exit codes 0/1/2 it never
-  delivers (PG-14). One session, one law: fail closed.
+  Reproduced (ROADMAP section 2): a hot path building a 600KB string per
+  iteration churned ~2.4GB through large-object space and PASSED
+  (minorHi=2, majorHi=0, retained 15KB) -- PG-02. A path churning 2.1GB
+  of Float64Array backing stores PASSED (minor 1, major 1, retained
+  NEGATIVE) -- PG-03a. A pool retaining 16MB of buffers PASSED the 64KB
+  retained threshold (heapUsed excludes backing stores; measured delta
+  4.6KB) -- PG-03b. The one-line promise is "prove your hot path
+  allocates nothing -- or name what did"; today it cannot name anything
+  big, external, or old-gen.
 
-THE DECISION (write decisions/0002-fail-closed.md BEFORE coding)
-  1. THRESHOLDS: NaN / non-finite / negative / non-number threshold
-     values (maxScavenges, maxRetainedKB, per-counter maxima) throw
-     TypeError/RangeError at config time, library-prefixed, naming the
-     field and value. Precedent: lite-gc-profiler throws on bad rule
-     values on its ops/frames lanes.
-  2. MEASURED NaN: a NaN measured value (minorHi, retainedKB_hi, a
-     counter delta) makes verdict FAIL with reason
-     '<signal>: not a number (fail closed)'. A NaN measurement is
-     evidence of a broken instrument, never of a clean hot path.
-  3. UNKNOWN COUNTER KEYS: cannot be validated at config time (counter
-     names exist only at runtime), so verdict FAILS with reason
-     '<key>: no such counter measured (statsOf keys: ...)'. ALSO
-     fail closed on the null case: thresholds.counters present but the
-     result has counters_hi === null (scenario had no statsOf) -> FAIL
-     with a reason saying so. Follows the gc-profiler v1.10+ unknown-
-     rule-keys precedent in spirit; record why it is fail-at-verdict
-     here rather than throw-at-config.
-  4. MISSING --expose-gc: measure() (and therefore zgcSuite/runGate)
-     throws at entry when typeof globalThis.gc !== 'function', message
-     carrying the exact run command. Escape hatch `allowNoGc: true`
-     (measure options + GateConfig). Decide the retained-signal shape
-     under allowNoGc; options for the planner to weigh:
-       A (recommended): allowNoGc + an EXPLICIT maxRetainedKB in the
-         same config throws at config time ('retained is ungateable
-         without --expose-gc'); with allowNoGc the retained rule is NOT
-         applied at all (default threshold included), the result
-         carries `retainedReliable: false`, and retainedKB_* stay as
-         diagnostics. Scavenges and counters still gate. Rationale:
-         the caller explicitly traded the retained signal away; gating
-         it anyway would judge noise (PG-11's spurious FAIL showed
-         2901KB of uncollected garbage).
-       B: keep the default retained rule and fail it with an
-         'unreliable' reason whenever retainedReliable is false --
-         rejected candidate: makes the escape hatch useless.
-     Record the choice and the rejection.
-  5. runGate PROCESS CONTRACT: add `code: 0 | 1 | 2` to GateResult
-     (0 pass, 1 scenario or mustFail failure, 2 detector-validation
-     failure). `passed === (code === 0)`. runGate NEVER touches
-     process.exitCode (suite law: runner semantics stay in the runner
-     layer); the docstring is rewritten to say "map result.code to your
-     exit code" and the CHANGELOG corrects the old 0/1/2 wording.
-  6. EMPTY GATES: zgcSuite and runGate throw on a missing, non-array,
-     or empty scenarios array unless `allowEmpty: true` is passed --
-     the option exists for controls-only detector smoke runs (torture
-     t1a is exactly that consumer) and its JSDoc says so.
+  Boundary law, decided up front: this is GATE HARDENING, not profiler
+  creep. New thresholds in the same three-line verdict vocabulary; no
+  GC-kind breakdowns in results, no per-callsite tables, no explain
+  reports. When a new signal trips, the failure message points the user
+  at lite-gc-profiler for diagnosis. That sentence ships in the reason
+  string or its docs, and the CHANGELOG repeats the boundary.
 
-TASKS
-  - decisions/0002-fail-closed.md first (the six policies above, with
-    the PG reproductions cited and the rejected shapes recorded).
-  - One shared option validator used by measure/zgcSuite/runGate:
-    N integer >= 1; k integer >= 2; flushMs finite >= 0 -- and 0 must
-    now be HONORED (replace every `(x && x.f) || DEFAULT` resolution
-    with `!== undefined` semantics); allowNoGc/allowEmpty strictly
-    boolean (truthy non-true throws -- the lite-leak 1.10.0 precedent).
-  - Scenario shape validation at the same door: name non-empty string,
-    setup/hot functions, statsOf/teardown functions when present;
-    applied to scenarios[], mustFail[], positiveControl, negativeControl.
-  - Threshold validation per decision 1; measured-NaN policy per 2;
-    unknown/null counter policy per 3; --expose-gc policy per 4;
-    GateResult.code per 5; empty-gate doors per 6.
-  - INTRA-REPO CONSUMERS (grep test/ for every measure(/runGate(/
-    zgcSuite( call and audit each against the new doors):
-    * test/torture/fixtures/t1a-rungate.mjs calls
-      runGate({ scenarios: [] }) -- must become
-      runGate({ scenarios: [], allowEmpty: true }) and thereby becomes
-      the torture-side proof of the new option.
-    * the T5 soak's measure(tiny, {N: 200, k: 2, flushMs: 1}) is legal
-      under the new doors -- assert, do not change.
-    * test/fixtures/*.test.mjs zgcSuite configs have non-empty
-      scenarios -- legal; leave.
-  - Torture T2 tier filled (replaces the skipped stub): every door hit
-    from OUTSIDE -- NaN thresholds, NaN measured (hand-built result),
-    typo'd counter key, counters-without-statsOf, N/k/flushMs garbage,
-    non-boolean allowNoGc, empty scenarios, scenario-shape garbage --
-    each with its passing twin one valid step away; plus a CHILD
-    process spawned WITHOUT --expose-gc asserting measure() throws
-    with the run command in the message (exit non-zero, never a hang),
-    and a child WITH allowNoGc asserting retainedReliable === false
-    and the decision-4 retained behavior.
-  - Self-test additions: runGate code values 0/1/2 exercised (0: green
-    controls-only allowEmpty run; 1: a mustFail that is not caught or
-    a failing scenario; 2: sabotaged control) -- reuse the P1 fixture
-    pattern (bare children, pinned N=20000 k=8 for deterministic
-    sabotage; the ~31%-flake lesson from P1 review is law here).
-  - PerfGate.d.ts: GateConfig gains allowEmpty?/allowNoGc?/flushMs
-    stays; measure options gain allowNoGc; MeasureResult gains
-    retainedReliable?: boolean; GateResult gains code: 0 | 1 | 2.
-  - llms.txt: minimal additions only (new options, code field, the
-    throw-on-no-gc sentence replacing "required" prose) -- the full
-    rewrite stays P6.
-  - Three-place sync 1.3.0 -> 1.4.0; CHANGELOG 1.4.0 entry (Changed:
-    throwing doors where garbage was accepted, each PG finding named;
-    Added: allowNoGc/allowEmpty/code/retainedReliable).
+THE CENSUS COMES FIRST (this session's anti-vibes law)
+  The naive design -- "verdict reads the majors meterOnce already
+  records" -- is FALSIFIED by the probe data: PG-02's LO churn showed
+  majorLo=0, majorHi=0 in-window on Node v26.3.1. makeGcCounter counts
+  only NODE_PERFORMANCE_GC_MINOR and _MAJOR; INCREMENTAL and WEAKCB
+  entries are dropped, and V8 may also defer LO collection past the
+  flush window entirely. Therefore, BEFORE any design freezes, the
+  planner specifies and the coder runs a KIND CENSUS probe: a raw
+  PerformanceObserver logging kind + flags + timing for every 'gc'
+  entry across the full bypass corpus --
+    C1 600KB-string LO churn        (the PG-02 probe, verbatim)
+    C2 512KB Float64Array churn     (PG-03a)
+    C3 16MB retained pool           (PG-03b)
+    C4 classic small-object churn   (the ring control, as baseline)
+    C5 pure arithmetic              (negative baseline)
+  each at the pinned deterministic window sizes the probes used, plus
+  the ambient distribution: 100 repetitions of C4/C5 recording
+  major/incremental counts and pause distribution (this also folds in
+  the T5 pause-noise question -- 11.6-12.9ms transient spikes were seen
+  under external host load in P2 verification).
+  The census numbers go INTO decisions/0003-bypass-signals.md verbatim,
+  and the signal design follows the numbers. If some bypass fires no
+  countable GC event on this Node, the decision record says exactly
+  that, and the corpus asserts what IS catchable instead of pretending.
+
+THE DECISION (decisions/0003-bypass-signals.md, drafted by planner from
+census data; the shapes to weigh)
+  1. Event-class signal: count MAJOR only, or MAJOR+INCREMENTAL as one
+     "old-gen activity" counter (WEAKCB policy stated either way)?
+     Threshold name and default (recommendation to test first:
+     maxMajors 0 -- but the census, not the recommendation, decides the
+     default and whether the counter includes incremental steps).
+     Scaling lane vs absolute: majors are rare events; absolute is
+     likely the honest lane -- decide with the census.
+  2. External signal: arrayBuffersKB delta measured at the same points
+     heapUsed already is (post-gc2 before/after, OUTSIDE the counting
+     window -- the window gains zero instructions, law). Threshold
+     maxArrayBuffersKB, default mirroring maxRetainedKB (64). Verify
+     with C2 whether TRANSIENT external churn is caught by the
+     event-class signal or needs its own lane; C3 proves the retained
+     case.
+  3. Detector integrity: every gated signal gets a control. Shape:
+     controlLarge (LO churn that must trip the chosen event-class
+     signal and/or external delta). Where it runs: always in
+     zgcSuite/runGate validation (cost ~1-2s, a gate may be thorough)
+     vs only when the new thresholds gate (they gate by default, so
+     this collapses to always) vs torture-only. Decide with measured
+     cost; record. validateDetector grows the clause; the P1 law holds:
+     ONE predicate, both call sites, no fork.
+  4. If the census shows a bypass class that NO cheap signal catches
+     in-window (deferred LO collection), the fallback design to weigh:
+     count events during the SECOND gc2 (the settle pass) into a
+     separate settle-window counter -- forced-collection work there
+     scales with what the hot loop left behind. Only if needed; only
+     with census evidence; the measurement window itself stays
+     untouched either way.
+
+TASKS (beyond the census and decision)
+  - meterOnce: capture memoryUsage().arrayBuffers alongside heapUsed at
+    the SAME two points; MeasureResult gains arrayBuffersKB_lo/_hi (and
+    whatever event-class fields the decision adds). Names are contract:
+    coordinate with formatResult, verdict reasons, d.ts, llms.txt.
+  - makeGcCounter: extend per the decision (count the chosen kinds;
+    keep MINOR/MAJOR fields back-compatible).
+  - verdict: new thresholds with P2's fail-closed semantics inherited
+    exactly (finite >= 0 at config; NaN measured fails with the P2
+    reason format; unknown keys already impossible by construction --
+    thresholds are named fields). Reason strings follow the house
+    format and the failure message for the new signals appends the
+    boundary pointer ("diagnose with lite-gc-profiler").
+  - zgcSuite/runGate: plumb thresholds + the decision-3 control;
+    validateDetector extended, still one predicate.
+  - mustFail corpus becomes torture T3 (replaces the skipped stub):
+    C1/C2/C3 as permanent fixtures that the gate must now CATCH, plus
+    C4 as the still-caught-by-scavenges control; T6-style zeroed-signal
+    shim (test-code only, never a library flag) must make T3 fail.
+  - formatResult: event-class count and external delta shown when
+    nonzero.
+  - PerfGate.d.ts + llms.txt: new fields/thresholds, minimal (P6 owns
+    the rewrite). CHANGELOG 1.5.0: the five-signal table, the census
+    table, the honest note that new defaults can fail previously-green
+    suites exactly when majors/external move -- that is the release.
+  - Three-place sync 1.4.0 -> 1.5.0.
+  - Consumer audit (grep, like P2): t1b/t1c fixtures print major
+    fields -- update expectations if the counter fields change shape;
+    T5 soak and existing fixtures must stay green under the new
+    defaults (the census C4/C5 ambient data justifies the chosen
+    defaults against exactly this).
 
 HOT PATH
-  All doors are config-time or verdict-time -- cold. meterOnce's
-  measurement window (between makeGcCounter() and gcc.close()) and
-  suiteGate's visit gain ZERO instructions; diff proves it. suiteGate
-  itself is untouched this session (its doors are P4).
+  The measurement window between makeGcCounter() and gcc.close() gains
+  ZERO instructions -- both new captures happen at the existing
+  before/after points. The observer callback may gain at most the same
+  kind-compare-and-increment shape it already has for the new kinds.
+  suiteGate untouched entirely (P4's domain). Diff proves all three.
 
 ASSERTIONS
-  - Every PG-04/05/08/09/11/14 reproduction from ROADMAP section 2,
-    inverted: the exact calls that passed now throw or fail with the
-    documented reason string.
-  - verdict(r, {maxScavenges: NaN}) throws; NaN minorHi fails with the
-    named reason; typo'd counter key fails naming the available keys;
-    counters thresholds against counters_hi null fails.
-  - measure(controlPositive, {N: -1}) throws; {k: 0.5} throws;
-    {k: 1} throws; {flushMs: 0} is accepted AND honored (prove the 0
-    actually reaches the sleep: e.g. duration delta vs flushMs: 200).
-  - Plain node (no flags): measure() throws with the run command in
-    the message; with allowNoGc: true it runs, retainedReliable is
-    false, and the decision-4 retained behavior holds.
-  - zgcSuite({scenarios: []}) throws; with allowEmpty: true it
-    registers the detector test only and the test name says so.
-  - runGate returns code 0/1/2 per the contract; process.exitCode is
-    untouched in all three cases; passed === (code === 0).
-  - torture prints ok with T2 now ACTIVE (stderr shows T2 numbers, not
-    "skipped"); TORTURE_CONTROL sabotages still fail; a NEW T2 control
-    (one door deliberately removed via env flag) fails T2.
-  - npm test green inside 90s (expect ~34 tests); npm run torture ok
-    inside 180s; npm pack --dry-run still 7 files; ASCII; EOF newline;
-    HEAD advances only by orchestrator commits.
+  - The census table exists in decisions/0003 with real numbers from
+    this machine, kinds broken out, 100-rep ambient distribution
+    included.
+  - PG-02 probe (600KB strings): verdict FAILS naming the chosen
+    signal. PG-03a (512KB churn): FAILS naming its signal per the
+    decision. PG-03b (16MB pool): FAILS naming arrayBuffersKB. All
+    three as torture T3 fixtures, plus in-session one-off runs pasted.
+  - Negative + ring controls still validate at defaults across the
+    ambient 100-rep distribution: zero spurious failures from the new
+    signals, or the default moves and the decision file shows the
+    numbers that moved it.
+  - New thresholds inherit P2 doors: NaN threshold throws; NaN measured
+    value fails with the P2 format; {maxMajors: -1} (or the decided
+    name) throws.
+  - T3 active in torture stderr; zeroed-signal control fails T3;
+    stock-control/leaky-soak/no-doors still fail their tiers.
+  - npm test green inside 90s; torture ok inside 180s; pack --dry-run
+    7 files; ASCII; EOF newline; three-place sync 1.5.0; HEAD moves
+    only by orchestrator commits (current HEAD: 56c3af4).
 
 NON-GOALS
-  No new signals (P3: maxMajors/maxArrayBuffersKB). No suiteGate doors
-  (P4). No inconclusive third verdict (rejection ledger stands). No
-  README work. NO git commits by subagents; NO npm publish of any kind
-  this session (the user publishes; registry currently at 1.3.0).
+  No GC-kind breakdown in MeasureResult beyond the decided counter
+  fields (kind census lives in the decision record, not the API). No
+  pause budgets (gc-profiler owns pauses). No RSS/PSS lanes. No browser
+  anything. No suiteGate changes (P4). No baseline files (ledger). NO
+  git commits by subagents; NO npm publish of any kind (registry is at
+  1.3.0; 1.4.0 publish is the user's).
 
 DONE WHEN
-  every fail-open reproduction fails closed with a named reason; the
-  doors are torture-gated with controls that provably fail; decision
-  0002 recorded; three-place sync 1.4.0
+  all three bypass reproductions are caught and named by torture-gated
+  fixtures; every gated signal has a control that provably fails;
+  defaults chosen from the census distribution; decision recorded with
+  the census table; five-signal story true in code, d.ts, llms.txt

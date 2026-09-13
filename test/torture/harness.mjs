@@ -87,7 +87,8 @@ export function TIER_SKIP(id, session) {
 // runs are the only other legal values; anything else is a typo and fails
 // closed rather than silently running the green path.
 export const CONTROL = process.env.TORTURE_CONTROL || '';
-if (CONTROL !== '' && CONTROL !== 'stock-control' && CONTROL !== 'leaky-soak' && CONTROL !== 'no-doors') {
+if (CONTROL !== '' && CONTROL !== 'stock-control' && CONTROL !== 'leaky-soak' &&
+    CONTROL !== 'no-doors' && CONTROL !== 'zero-signal') {
     die('unknown TORTURE_CONTROL=' + CONTROL +
-        ' (expected stock-control, leaky-soak, or no-doors)');
+        ' (expected stock-control, leaky-soak, no-doors, or zero-signal)');
 }

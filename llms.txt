@@ -4,10 +4,20 @@ Zero-GC and performance regression gate for node:test.
 
 ## What it does
 
-Proves a hot path allocates nothing, or names what did. Three signals:
-  1. Scavenge count (perf_hooks GC minor) -- transient allocation.
+Proves a hot path allocates nothing, or names what did. Five signals:
+  1. Scavenge count (perf_hooks GC minor) -- transient young-gen allocation.
   2. Custom counters (user-supplied statsOf) -- exact engine internals.
   3. Retained-heap delta (memoryUsage + gc) -- leak detector.
+  4. Old-gen activity (perf_hooks GC major + incremental) -- churn that
+     promotes or marks old space (PG-03a). GATE signal, default max 0.
+  5. External/arrayBuffers delta (memoryUsage().arrayBuffers + gc) --
+     backing-store memory heapUsed excludes (PG-03b). Default max 64 KB.
+
+Signals 4 and 5 are GATE signals, not a profiler: when either trips, the
+reason string names it and points at @zakkster/lite-gc-profiler for
+diagnosis. New in v1.5.0; new defaults CAN fail a previously-green suite
+exactly when a hot path fires an old-gen collection or grows external
+memory. See decisions/0003 for the GC-kind census that chose them.
 
 Scaling verdict: measure at N and k*N. Zero-alloc => ~0 scavenges at both.
 Detector self-validation: positive control (must scavenge) + negative
@@ -28,8 +38,14 @@ zgcSuite(config) -- register node:test cases.
 measure(scenario, {N, k, flushMs, allowNoGc}) -- raw MeasureResult.
   N integer >=1, k integer >=2, flushMs finite >=0 (0 honored); bad values throw.
 verdict(result, thresholds) -- { pass: boolean, reasons: string[] }.
-  Bad thresholds throw. Fail-closed reasons: '<signal>: not a number (fail closed)'
-  and '<key>: no such counter measured (statsOf keys: ...)'.
+  Bad thresholds throw. thresholds.maxOldGen (default 0),
+  thresholds.maxArrayBuffersKB (default 64) join maxScavenges/maxRetainedKB.
+  Fail-closed reasons: '<signal>: not a number (fail closed)',
+  '<key>: no such counter measured (statsOf keys: ...)'. Over-budget:
+  'oldgen: N > 0 (old-gen GC activity -- diagnose with @zakkster/lite-gc-profiler)',
+  'arrayBuffers: NKB > 64KB (external memory -- diagnose with @zakkster/lite-gc-profiler)'.
+  arrayBuffers is skipped under allowNoGc; an explicit maxArrayBuffersKB with
+  allowNoGc throws (mirrors maxRetainedKB). oldgen gates even under allowNoGc.
 runGate(config) -- standalone report; returns {passed, code, results}, code 0 pass / 1 scenario or must-fail failure / 2 detector validation failed; never sets process.exitCode.
 
 ## Scenario shape

@@ -38,8 +38,16 @@ export interface MeasureResult {
     minorHi: number;
     majorLo: number;
     majorHi: number;
+    /** Old-gen activity (major + incremental) at N. */
+    oldGenLo: number;
+    /** Old-gen activity (major + incremental) at k*N. GATE signal (default max 0). */
+    oldGenHi: number;
     retainedKB_lo: number;
     retainedKB_hi: number;
+    /** External/backing-store (memoryUsage().arrayBuffers) delta in KB at N. */
+    arrayBuffersKB_lo: number;
+    /** External delta in KB at k*N. GATE signal (default max 64). */
+    arrayBuffersKB_hi: number;
     /** Custom counter deltas at N, or null if no statsOf. */
     counters_lo: Record<string, number> | null;
     /** Custom counter deltas at k*N, or null if no statsOf. */
@@ -64,6 +72,16 @@ export interface Thresholds {
     maxScavenges?: number;
     /** Max retained heap growth in KB. Default 64. */
     maxRetainedKB?: number;
+    /**
+     * Max allowed old-gen activity (major + incremental) at k*N. Default 0.
+     * When it trips, diagnose the cause with @zakkster/lite-gc-profiler.
+     */
+    maxOldGen?: number;
+    /**
+     * Max allowed external/arrayBuffers growth in KB at k*N. Default 64.
+     * Ungated under allowNoGc; an explicit value with allowNoGc throws.
+     */
+    maxArrayBuffersKB?: number;
     /** Per-counter maximum allowed delta. */
     counters?: Record<string, number>;
 }
@@ -84,12 +102,18 @@ export interface GateConfig {
     maxScavenges?: number;
     /** Max retained heap growth in KB. Default 64. */
     maxRetainedKB?: number;
+    /** Max old-gen activity (major + incremental) at k*N. Default 0. */
+    maxOldGen?: number;
+    /** Max external/arrayBuffers growth in KB at k*N. Default 64 (undefined under allowNoGc). */
+    maxArrayBuffersKB?: number;
     /** Counter thresholds for statsOf deltas. */
     counters?: Record<string, number>;
     /** Override positive control. */
     positiveControl?: Scenario;
     /** Override negative control. */
     negativeControl?: Scenario;
+    /** Override the large/external detector control (controlLarge). */
+    largeControl?: Scenario;
     /** Scenarios that MUST trip the gate (injected allocation self-tests). */
     mustFail?: Scenario[];
     /**
@@ -142,6 +166,13 @@ export const controlPositive: Scenario;
 
 /** Built-in negative control (pure arithmetic, zero allocation). */
 export const controlNegative: Scenario;
+
+/**
+ * Built-in large/external control: a bounded, mask-gated retained pool of 64KB
+ * ArrayBuffers that trips the arrayBuffers signal. Validates the external
+ * detector in zgcSuite/runGate (decisions/0003).
+ */
+export const controlLarge: Scenario;
 
 /**
  * Register node:test cases: detector validation, scenario gating, and

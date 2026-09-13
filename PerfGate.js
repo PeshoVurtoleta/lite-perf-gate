@@ -2,22 +2,32 @@
  * @zakkster/lite-perf-gate
  * Zero-GC and performance regression gate for node:test.
  *
- * Three measurement signals, each for what it can actually see:
+ * Five measurement signals, each for what it can actually see:
  *   1. Scavenge count (perf_hooks 'gc', minor) -- the reliable detector
- *      of TRANSIENT allocation. Retained-heap misses it (freed before
- *      snapshot); the V8 sampling profiler misses it (reports live-at-stop).
+ *      of TRANSIENT young-generation allocation. Retained-heap misses it
+ *      (freed before snapshot); the V8 sampling profiler misses it
+ *      (reports live-at-stop).
  *   2. Custom counters (user-supplied statsOf) -- exact engine internals.
  *   3. Retained-heap delta (memoryUsage + gc) -- leak detector.
+ *   4. Old-gen activity (perf_hooks 'gc', major + incremental) -- catches
+ *      churn that promotes or triggers old-space marking, which the scavenge
+ *      counter alone cannot see (PG-03a). This is a GATE signal, not a
+ *      profiler: when it trips, diagnose the cause with @zakkster/lite-gc-profiler.
+ *   5. External/arrayBuffers delta (memoryUsage().arrayBuffers + gc) -- catches
+ *      backing-store memory that heapUsed excludes (PG-03b). Same boundary:
+ *      it names that external memory grew and points at lite-gc-profiler.
  *
- * Pass/fail uses scaling: measure at N and k*N. Zero-alloc => ~0 scavenges
- * at both; allocation => scavenges scale with total bytes. Controls validate
- * the detector on every run.
+ * Pass/fail uses scaling on scavenges: measure at N and k*N. Zero-alloc =>
+ * ~0 scavenges at both; allocation => scavenges scale with total bytes. The
+ * old-gen and external lanes are ABSOLUTE (rare events, so a scaling lane on
+ * a 0-or-1 signal is noise -- decisions/0003). Controls validate the detector
+ * on every run.
  *
  * Copyright (c) 2026 Zahary Shinikchiev <shinikchiev@yahoo.com>
  * MIT License
  */
 
-export const VERSION = '1.4.0';
+export const VERSION = '1.5.0';
 
 import {PerformanceObserver, constants} from 'node:perf_hooks';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -26,18 +36,22 @@ import assert from 'node:assert/strict';
 
 const MINOR = constants.NODE_PERFORMANCE_GC_MINOR;
 const MAJOR = constants.NODE_PERFORMANCE_GC_MAJOR;
+const INCR = constants.NODE_PERFORMANCE_GC_INCREMENTAL;
+const WEAK = constants.NODE_PERFORMANCE_GC_WEAKCB;
 
 // ---------------------------------------------------------------------------
 // GC counter
 // ---------------------------------------------------------------------------
 
 function makeGcCounter() {
-    const c = {minor: 0, major: 0};
+    const c = {minor: 0, major: 0, incremental: 0, weakcb: 0};
     const obs = new PerformanceObserver(function (list) {
         for (const e of list.getEntries()) {
             const k = e.detail ? e.detail.kind : e.kind;
             if (k === MINOR) c.minor++;
             else if (k === MAJOR) c.major++;
+            else if (k === INCR) c.incremental++;
+            else if (k === WEAK) c.weakcb++;
         }
     });
     obs.observe({entryTypes: ['gc']});
@@ -88,6 +102,8 @@ const NO_GC_MSG = 'lite-perf-gate: measure: globalThis.gc is not a function -- '
     'Pass allowNoGc: true to gate scavenges and counters only.';
 const NO_RETAINED = 'retained is ungateable without --expose-gc ' +
     '(allowNoGc: true with an explicit maxRetainedKB) -- drop one of them.';
+const NO_ARRAYBUFFERS = 'arrayBuffers is ungateable without --expose-gc ' +
+    '(allowNoGc: true with an explicit maxArrayBuffersKB) -- drop one of them.';
 const EMPTY_HINT = ' -- pass allowEmpty: true for a controls-only detector smoke run.';
 
 /**
@@ -147,6 +163,14 @@ function validateGate(where, cfg, scenario) {
             (typeof c.maxRetainedKB !== 'number' || !isFinite(c.maxRetainedKB) || c.maxRetainedKB < 0)) {
             throw new RangeError(P + 'maxRetainedKB must be a finite number >= 0 (got ' + String(c.maxRetainedKB) + ')');
         }
+        if (c.maxOldGen !== undefined &&
+            (typeof c.maxOldGen !== 'number' || !isFinite(c.maxOldGen) || c.maxOldGen < 0)) {
+            throw new RangeError(P + 'maxOldGen must be a finite number >= 0 (got ' + String(c.maxOldGen) + ')');
+        }
+        if (c.maxArrayBuffersKB !== undefined &&
+            (typeof c.maxArrayBuffersKB !== 'number' || !isFinite(c.maxArrayBuffersKB) || c.maxArrayBuffersKB < 0)) {
+            throw new RangeError(P + 'maxArrayBuffersKB must be a finite number >= 0 (got ' + String(c.maxArrayBuffersKB) + ')');
+        }
         if (c.counters !== undefined && c.counters !== null) {
             if (typeof c.counters !== 'object') {
                 throw new TypeError(P + 'counters must be an object of numeric maxima (got ' + typeof c.counters + ')');
@@ -159,6 +183,7 @@ function validateGate(where, cfg, scenario) {
             }
         }
         if (allowNoGc && c.maxRetainedKB !== undefined) throw new RangeError(P + NO_RETAINED);
+        if (allowNoGc && c.maxArrayBuffersKB !== undefined) throw new RangeError(P + NO_ARRAYBUFFERS);
     }
 
     let list = null;
@@ -197,6 +222,10 @@ function validateGate(where, cfg, scenario) {
         if (c.negativeControl !== undefined) {
             list.push(c.negativeControl);
             labels.push('negativeControl');
+        }
+        if (c.largeControl !== undefined) {
+            list.push(c.largeControl);
+            labels.push('largeControl');
         }
     }
     if (list !== null) {
@@ -237,7 +266,9 @@ async function meterOnce(scenario, iters, flushMs) {
     await gc2();
 
     const statsBefore = scenario.statsOf ? scenario.statsOf(state) : null;
-    const heapBefore = process.memoryUsage().heapUsed;
+    const mu0 = process.memoryUsage();
+    const heapBefore = mu0.heapUsed;
+    const abBefore = mu0.arrayBuffers;
 
     const gcc = makeGcCounter();
     scenario.hot(state, iters);
@@ -246,8 +277,16 @@ async function meterOnce(scenario, iters, flushMs) {
     const major = gcc.c.major;
     gcc.close();
 
+    // Old-gen activity = major + incremental. incremental is read AFTER
+    // gcc.close() on purpose: the measurement window (makeGcCounter -> close)
+    // stays byte-identical to v1.4.0, and the observer callback has already
+    // tallied every 'gc' entry delivered during the flush sleep. decisions/0003.
+    const oldGen = major + gcc.c.incremental;
+
     await gc2();
-    const heapAfter = process.memoryUsage().heapUsed;
+    const mu1 = process.memoryUsage();
+    const heapAfter = mu1.heapUsed;
+    const abAfter = mu1.arrayBuffers;
     const statsAfter = scenario.statsOf ? scenario.statsOf(state) : null;
     if (scenario.teardown) scenario.teardown(state);
 
@@ -261,7 +300,12 @@ async function meterOnce(scenario, iters, flushMs) {
         }
     }
 
-    return {minor: minor, major: major, retainedKB: (heapAfter - heapBefore) / 1024, counters: counters};
+    return {
+        minor: minor, major: major, oldGen: oldGen,
+        retainedKB: (heapAfter - heapBefore) / 1024,
+        arrayBuffersKB: (abAfter - abBefore) / 1024,
+        counters: counters
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +350,9 @@ export async function measure(scenario, options) {
         name: scenario.name, N: o.N, k: o.k,
         minorLo: lo.minor, minorHi: hi.minor,
         majorLo: lo.major, majorHi: hi.major,
+        oldGenLo: lo.oldGen, oldGenHi: hi.oldGen,
         retainedKB_lo: lo.retainedKB, retainedKB_hi: hi.retainedKB,
+        arrayBuffersKB_lo: lo.arrayBuffersKB, arrayBuffersKB_hi: hi.arrayBuffersKB,
         counters_lo: lo.counters, counters_hi: hi.counters,
         retainedReliable: gcOk
     };
@@ -374,6 +420,90 @@ export const controlNegative = {
     }
 };
 
+// controlLarge -- the detector control for the EXTERNAL/arrayBuffers signal
+// (signal 5). The census (decisions/0003) proved the two things that fix this
+// shape: (1) 256KB-string LO churn -- the planned controlLarge candidate --
+// trips NEITHER new signal on Node v26.3.1 (oldGen 0, arrayBuffers 0), so it
+// is not a control; (2) the oldGen positive control at suite defaults
+// (Float64Array churn) costs ~2730ms and jitters 2744..2944, i.e. a per-run
+// oldGen floor is noise amplification (Axis C's own rejection). A mask-gated
+// ACCUMULATING 64KB-ArrayBuffer pool, by contrast, is measured DETERMINISTIC
+// at 832KB arrayBuffers (6/6 reps), oldGen 0, ~200ms at the pinned
+// {N:200000,k:8} window below -- 13x the 64KB gate, so the same measurement
+// both validates the detector and demonstrates the gate catches it. That is
+// the clean, cheap, always-on detector for the external lane; the oldGen
+// lane's detector is the negative-control old-gen clause (no false positive)
+// plus torture T3's must-catch C2 fixture (true positive). Axis D landed on an
+// adapted D1: always-on placement, arrayBuffers clause.
+//
+// RESIDUE (decisions/0003 "controlLarge residue"): a retained ArrayBuffer pool
+// raises V8's scheduled-scavenge accounting, which then fires PERIODIC
+// scavenges INSIDE the next sequential measurement window -- mechanism proven
+// H-a: the spurious entries' startTime lands in-window, not late delivery.
+// This is not uncollected garbage, no gc clears it (forcing collections made
+// it WORSE), and NO pool size is immune (256KB still poisoned 2/50). The
+// residue is forward-only, so the fix is ORDERING: controlLarge is measured
+// AFTER every scavenge-gated measurement. See measureLargeControl().
+const CONTROL_LARGE_MASK = 131071;  // one 64KB ArrayBuffer every 131072 iters
+const CONTROL_LARGE_BYTES = 65536;
+const CONTROL_LARGE_N = 200000;     // pinned so the control's evidence does
+const CONTROL_LARGE_K = 8;          // not get cheaper with a consumer's N.
+
+/**
+ * Large-object / external control: retains a bounded, mask-gated pool of 64KB
+ * ArrayBuffers so the arrayBuffers delta at k*N is large and repeatable
+ * (~832KB, 13x the default gate) at a fixed footprint regardless of n. Trips
+ * signal 5. Cleanup is owned two ways: teardown() drops the pool, and the
+ * detector call sites isolate its scheduled-scavenge residue by ORDERING --
+ * controlLarge is measured LAST, so nothing scavenge-gated follows it (the
+ * residue is never drained; draining makes it worse). decisions/0003.
+ */
+export const controlLarge = {
+    name: 'CONTROL_LARGE (64KB ArrayBuffer every 131072 iters, accumulating pool)',
+    setup: function () {
+        return {pool: []};
+    },
+    hot: function (s, n) {
+        const p = s.pool;
+        for (let i = 0; i < n; i++) {
+            if ((i & CONTROL_LARGE_MASK) === 0) p.push(new ArrayBuffer(CONTROL_LARGE_BYTES));
+        }
+    },
+    // Drop every backing store so the pool is collectable the instant the pass
+    // ends. Necessary but not sufficient alone (meterOnce runs teardown after
+    // its final gc2); the next measurement is isolated by ORDERING -- measuring
+    // controlLarge LAST, not by draining the residue (draining makes it worse).
+    // decisions/0003 "controlLarge residue".
+    teardown: function (s) {
+        const p = s.pool;
+        for (let i = 0; i < p.length; i++) p[i] = null;
+        s.pool = null;
+    }
+};
+
+/**
+ * Measure controlLarge at its pinned window. The ONE place both detector call
+ * sites (zgcSuite, runGate) go through -- no diverging measurement logic.
+ *
+ * controlLarge leaves a scheduled-scavenge residue (H-a, decisions/0003
+ * "controlLarge residue") that poisons the NEXT scavenge-gated measurement.
+ * Forcing collections does NOT clear it -- measured, it made poisoning WORSE
+ * (drain 8/20/40 -> 3/8/9 caught of 10 cold processes). The residue is
+ * forward-only, so the fix is ORDERING, not draining: this control is measured
+ * AFTER every scavenge-gated measurement. runGate measures it last (below);
+ * zgcSuite measures it in the detector test, whose node:test-block boundary
+ * dissipates the residue before the first scenario test (verified 15/15).
+ *
+ * @param {Scenario} largeCtrl
+ * @param {number} flushMs
+ * @param {boolean} allowNoGc
+ * @returns {Promise<MeasureResult>}
+ */
+async function measureLargeControl(largeCtrl, flushMs, allowNoGc) {
+    return measure(largeCtrl,
+        {N: CONTROL_LARGE_N, k: CONTROL_LARGE_K, flushMs: flushMs, allowNoGc: allowNoGc});
+}
+
 // ---------------------------------------------------------------------------
 // Detector validation
 // ---------------------------------------------------------------------------
@@ -384,17 +514,24 @@ export const controlNegative = {
 const CONTROL_FLOOR = 6;     // positive control: scavenges at k*N
 const CONTROL_SCALE = 2;     // positive control: minorHi / minorLo
 const CONTROL_NEG_CEIL = 2;  // negative control: hard ceiling
+// Large-control floor: floor(observed 832KB / 3) -- a 3x margin under the
+// deterministic reading, and 4x over the default maxArrayBuffersKB, so the
+// same measurement both validates the detector and demonstrates the gate would
+// catch it. decisions/0003.
+const CONTROL_LARGE_FLOOR = 277; // arrayBuffers KB at k*N
 
 /**
  * The ONE detector-validation predicate. zgcSuite and runGate both call it;
- * neither forks it. Comparisons are written so a NaN count fails closed.
+ * neither forks it. Comparisons are written so a NaN/undefined count fails
+ * closed (`!(x >= f)` / `!(x <= c)`).
  *
- * @param {MeasureResult} pos  positive-control measurement
- * @param {MeasureResult} neg  negative-control measurement
- * @param {number} maxScav     suite scavenge threshold (tightens neg only)
+ * @param {MeasureResult} pos    positive-control measurement
+ * @param {MeasureResult} neg    negative-control measurement
+ * @param {MeasureResult} large  controlLarge measurement (external lane)
+ * @param {number} maxScav       suite scavenge threshold (tightens neg only)
  * @returns {{ ok: boolean, reason: string | null }}
  */
-function validateDetector(pos, neg, maxScav) {
+function validateDetector(pos, neg, large, maxScav) {
     const flags = ' Run with --expose-gc --max-semi-space-size=4.';
     if (!(pos.minorHi >= CONTROL_FLOOR)) {
         return {ok: false, reason: 'positive control forced ' + pos.minorHi +
@@ -410,6 +547,22 @@ function validateDetector(pos, neg, maxScav) {
         return {ok: false, reason: 'negative control forced ' + neg.minorHi +
             ' scavenges (need <=' + negCeil + ') -- noisy process, or a prior ' +
             'measurement poisoned it.' + flags};
+    }
+    // Old-gen floor on the NEGATIVE control: the census (decisions/0003) shows
+    // C5 pure arithmetic fires 0 old-gen collections across 100 reps, so a
+    // nonzero here means a noisy instrument, not a clean hot path -- refuse to
+    // judge the oldgen lane on it. `!(<=)` fails closed on NaN/undefined.
+    if (!(neg.oldGenHi <= 0)) {
+        return {ok: false, reason: 'negative control forced ' + neg.oldGenHi +
+            ' old-gen collections (need 0) -- noisy process, the oldgen lane ' +
+            'cannot be trusted.' + flags};
+    }
+    if (!(large.arrayBuffersKB_hi >= CONTROL_LARGE_FLOOR)) {
+        const got = typeof large.arrayBuffersKB_hi === 'number'
+            ? large.arrayBuffersKB_hi.toFixed(0) : String(large.arrayBuffersKB_hi);
+        return {ok: false, reason: 'large control forced ' + got +
+            'KB arrayBuffers at ' + large.k + 'N (need >=' + CONTROL_LARGE_FLOOR +
+            'KB) -- the external signal is blind.' + flags};
     }
     return {ok: true, reason: null};
 }
@@ -442,8 +595,13 @@ export function verdict(r, thresholds) {
     if (thresholds && thresholds.maxRetainedKB !== undefined && r && r.retainedReliable === false) {
         throw new RangeError('lite-perf-gate: verdict: ' + NO_RETAINED);
     }
+    if (thresholds && thresholds.maxArrayBuffersKB !== undefined && r && r.retainedReliable === false) {
+        throw new RangeError('lite-perf-gate: verdict: ' + NO_ARRAYBUFFERS);
+    }
     const maxScav = (thresholds && thresholds.maxScavenges !== undefined) ? thresholds.maxScavenges : 2;
     const maxRetKB = (thresholds && thresholds.maxRetainedKB !== undefined) ? thresholds.maxRetainedKB : 64;
+    const maxOldGen = (thresholds && thresholds.maxOldGen !== undefined) ? thresholds.maxOldGen : 0;
+    const maxAbKB = (thresholds && thresholds.maxArrayBuffersKB !== undefined) ? thresholds.maxArrayBuffersKB : 64;
     const ct = (thresholds && thresholds.counters) || null;
     const reasons = [];
 
@@ -457,6 +615,30 @@ export function verdict(r, thresholds) {
             reasons.push('retained: not a number (fail closed)');
         } else if (r.retainedKB_hi > maxRetKB) {
             reasons.push('retained: ' + r.retainedKB_hi.toFixed(0) + 'KB > ' + maxRetKB + 'KB');
+        }
+    }
+    // Old-gen lane (major + incremental). GATED on presence for back-compat:
+    // hand-built results (suiteGate's per-budget call) omit oldGenHi and must
+    // not gain a reason (decision 0002 policy 2). Reliable without --expose-gc:
+    // it comes from the observer, not memoryUsage, so it is NOT skipped when
+    // retainedReliable is false.
+    if (r.oldGenHi !== undefined) {
+        if (typeof r.oldGenHi !== 'number' || r.oldGenHi !== r.oldGenHi) {
+            reasons.push('oldgen: not a number (fail closed)');
+        } else if (r.oldGenHi > maxOldGen) {
+            reasons.push('oldgen: ' + r.oldGenHi + ' > ' + maxOldGen +
+                ' (old-gen GC activity -- diagnose with @zakkster/lite-gc-profiler)');
+        }
+    }
+    // External/arrayBuffers lane. GATED on presence, and -- like retained --
+    // skipped when retainedReliable is false, because the delta is bracketed
+    // by the same gc2() calls that no-op without --expose-gc.
+    if (r.arrayBuffersKB_hi !== undefined && r.retainedReliable !== false) {
+        if (typeof r.arrayBuffersKB_hi !== 'number' || r.arrayBuffersKB_hi !== r.arrayBuffersKB_hi) {
+            reasons.push('arrayBuffers: not a number (fail closed)');
+        } else if (r.arrayBuffersKB_hi > maxAbKB) {
+            reasons.push('arrayBuffers: ' + r.arrayBuffersKB_hi.toFixed(0) + 'KB > ' + maxAbKB +
+                'KB (external memory -- diagnose with @zakkster/lite-gc-profiler)');
         }
     }
     if (ct !== null) {
@@ -495,6 +677,12 @@ export function formatResult(r) {
         '\n    scavenges  N:' + String(r.minorLo).padStart(3) +
         '  ' + r.k + 'N:' + String(r.minorHi).padStart(3) +
         '   retained ' + r.retainedKB_hi.toFixed(0) + 'KB';
+    if (typeof r.oldGenHi === 'number' && r.oldGenHi > 0) {
+        s += '   oldgen ' + r.oldGenHi;
+    }
+    if (typeof r.arrayBuffersKB_hi === 'number' && r.arrayBuffersKB_hi > 0.5) {
+        s += '   arrayBuffers ' + r.arrayBuffersKB_hi.toFixed(0) + 'KB';
+    }
     if (r.counters_hi !== null) {
         for (const key in r.counters_hi) {
             s += '   ' + key + ' \u0394' + String(r.counters_hi[key]).padStart(6);
@@ -555,22 +743,31 @@ export function zgcSuite(config) {
     const thresholds = {
         maxScavenges: cf.maxScavenges !== undefined ? cf.maxScavenges : 2,
         maxRetainedKB: o.allowNoGc ? undefined : (cf.maxRetainedKB !== undefined ? cf.maxRetainedKB : 64),
+        maxOldGen: cf.maxOldGen !== undefined ? cf.maxOldGen : 0,
+        maxArrayBuffersKB: o.allowNoGc ? undefined : (cf.maxArrayBuffersKB !== undefined ? cf.maxArrayBuffersKB : 64),
         counters: cf.counters || null
     };
     const posCtrl = cf.positiveControl || controlPositive;
     const negCtrl = cf.negativeControl || controlNegative;
+    const largeCtrl = cf.largeControl || controlLarge;
     const mustFail = cf.mustFail || [];
     const maxScav = thresholds.maxScavenges;
 
     test(scenarios.length === 0
         ? 'perf-gate: detector validation only (allowEmpty, 0 scenarios)'
-        : 'perf-gate: detector validation (positive + negative controls)', async function () {
+        : 'perf-gate: detector validation (positive + negative + large controls)', async function () {
         const pos = await measure(posCtrl, opts);
         _controlKeepAlive();
         const neg = await measure(negCtrl, opts);
-        const v = validateDetector(pos, neg, maxScav);
+        // controlLarge is measured LAST in this detector test; its
+        // scheduled-scavenge residue (never drained -- draining makes it worse)
+        // is isolated by that ordering plus the node:test block boundary, so
+        // the scenario test blocks that follow are not poisoned (H-a,
+        // decisions/0003 "controlLarge residue").
+        const large = await measureLargeControl(largeCtrl, o.flushMs, o.allowNoGc);
+        const v = validateDetector(pos, neg, large, maxScav);
         assert.ok(v.ok, 'DETECTOR VALIDATION FAILED: ' + v.reason +
-            '\n  ' + formatResult(pos) + '\n  ' + formatResult(neg));
+            '\n  ' + formatResult(pos) + '\n  ' + formatResult(neg) + '\n  ' + formatResult(large));
     });
 
     for (let i = 0; i < scenarios.length; i++) {
@@ -621,10 +818,13 @@ export async function runGate(config) {
     const thresholds = {
         maxScavenges: cf.maxScavenges !== undefined ? cf.maxScavenges : 2,
         maxRetainedKB: o.allowNoGc ? undefined : (cf.maxRetainedKB !== undefined ? cf.maxRetainedKB : 64),
+        maxOldGen: cf.maxOldGen !== undefined ? cf.maxOldGen : 0,
+        maxArrayBuffersKB: o.allowNoGc ? undefined : (cf.maxArrayBuffersKB !== undefined ? cf.maxArrayBuffersKB : 64),
         counters: cf.counters || null
     };
     const posCtrl = cf.positiveControl || controlPositive;
     const negCtrl = cf.negativeControl || controlNegative;
+    const largeCtrl = cf.largeControl || controlLarge;
     const mustFail = cf.mustFail || [];
     const maxScav = thresholds.maxScavenges;
     const N = opts.N;
@@ -632,14 +832,35 @@ export async function runGate(config) {
 
     console.log('Zero-GC gate \u2014 scavenge scaling (N=' + N + ', ' + k + 'N=' + (k * N) + ')\n');
 
+    // Measure every scavenge-gated pass FIRST, while the process is clean, and
+    // controlLarge LAST. controlLarge's retained external memory raises V8's
+    // scheduled-scavenge accounting, which poisons the NEXT measurement's minor
+    // count (H-a, decisions/0003 "controlLarge residue"); no gc drains it, so
+    // ordering is the fix -- nothing scavenge-gated may follow it. Detector
+    // validation therefore runs after measurement, still returning code 2 and
+    // discarding results if the instrument is broken.
     const pos = await measure(posCtrl, opts);
     const neg = await measure(negCtrl, opts);
+
+    const results = [];
+    for (let i = 0; i < scenarios.length; i++) {
+        results.push(await measure(scenarios[i], opts));
+    }
+
+    const mfResults = [];
+    for (let j = 0; j < mustFail.length; j++) {
+        mfResults.push(await measure(mustFail[j], opts));
+    }
+
+    const large = await measureLargeControl(largeCtrl, o.flushMs, o.allowNoGc);
+    _controlKeepAlive();
+
     console.log('== controls ==');
     console.log(formatResult(pos));
     console.log(formatResult(neg));
-    _controlKeepAlive();
+    console.log(formatResult(large));
 
-    const dv = validateDetector(pos, neg, maxScav);
+    const dv = validateDetector(pos, neg, large, maxScav);
     if (!dv.ok) {
         console.log('\n!! DETECTOR VALIDATION FAILED: ' + dv.reason);
         return {passed: false, code: 2, results: []};
@@ -649,21 +870,17 @@ export async function runGate(config) {
         CONTROL_FLOOR + '), negative forced ' + neg.minorHi + '.\n');
 
     console.log('== scenarios ==');
-    const results = [];
-    for (let i = 0; i < scenarios.length; i++) {
-        const r = await measure(scenarios[i], opts);
-        results.push(r);
-        console.log(formatResult(r));
+    for (let i = 0; i < results.length; i++) {
+        console.log(formatResult(results[i]));
     }
 
     let mustFailOK = true;
-    if (mustFail.length > 0) {
+    if (mfResults.length > 0) {
         console.log('\n== must-fail (gate self-test) ==');
-        for (let j = 0; j < mustFail.length; j++) {
-            const mf = await measure(mustFail[j], opts);
-            const mfv = verdict(mf, thresholds);
+        for (let j = 0; j < mfResults.length; j++) {
+            const mfv = verdict(mfResults[j], thresholds);
             if (mfv.pass) mustFailOK = false;
-            console.log((mfv.pass ? 'MISSED ' : 'CAUGHT ') + formatResult(mf));
+            console.log((mfv.pass ? 'MISSED ' : 'CAUGHT ') + formatResult(mfResults[j]));
         }
     }
 
@@ -893,7 +1110,9 @@ function ndjsonMeasure(r, meta, lines) {
         type: 'measure', name: r.name, N: r.N, k: r.k,
         minorLo: r.minorLo, minorHi: r.minorHi,
         majorLo: r.majorLo, majorHi: r.majorHi,
+        oldGenLo: r.oldGenLo, oldGenHi: r.oldGenHi,
         retainedKB_lo: r.retainedKB_lo, retainedKB_hi: r.retainedKB_hi,
+        arrayBuffersKB_lo: r.arrayBuffersKB_lo, arrayBuffersKB_hi: r.arrayBuffersKB_hi,
         counters_lo: r.counters_lo, counters_hi: r.counters_hi
     })));
 }

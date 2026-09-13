@@ -33,6 +33,8 @@ process.stdout.write('PGT1 ' + JSON.stringify({
     minorHi: r.minorHi,
     majorLo: r.majorLo,
     majorHi: r.majorHi,
+    oldGenHi: r.oldGenHi,
+    arrayBuffersKB_hi: r.arrayBuffersKB_hi,
     retainedKB_hi: r.retainedKB_hi,
     keepAlive: keepAlive
 }) + '\n');

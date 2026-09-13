@@ -545,6 +545,18 @@ THE DECISION (record in decisions/0003-bypass-signals.md BEFORE coding)
     ambient FinalizationRegistry/incremental activity must be measured
     first (run controls 100x, record the major-count distribution, pick
     the floor with data, not vibes). Recommendation to test first: 0.
+  - KIND CENSUS FIRST (added post-P2): the PG-02 probe recorded
+    majorLo=0, majorHi=0 for the 2.4GB large-object churn -- the bypass
+    does not reliably surface as MAJOR entries in-window on Node 26.
+    makeGcCounter ignores NODE_PERFORMANCE_GC_INCREMENTAL and _WEAKCB;
+    before freezing any signal design, log ALL four kinds (+ flags)
+    across the full bypass corpus and design from that census. If a
+    bypass fires no countable event at all on this Node, the decision
+    record says so and the corpus asserts exactly what IS catchable.
+  - Related load data: the T5 pause gate (maxPauseMs 8) saw transient
+    11.6-12.9ms spikes under 265-274 percent external CPU load in P2
+    verification (clean re-runs 3.3-4.6ms). Fold pause-noise
+    distribution into the same 100x measurement pass.
   - External signal shape: `arrayBuffersKB` delta measured like
     retainedKB (post-gc2 before/after), gated by `maxArrayBuffersKB`
     (default 64, mirroring retained). Transient external churn is

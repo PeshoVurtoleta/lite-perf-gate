@@ -12,7 +12,12 @@
 //       positive one in the same process (PG-10 inverted).
 //   T2  fail-closed doors -- every door hit from OUTSIDE, each with its
 //       passing twin, plus two bare children without --expose-gc.
-//   T3  bypass corpus            -- P3 (skipped).
+//   T3  bypass corpus -- the PG-02/PG-03 allocation bypasses as permanent
+//       bare-child fixtures: C2 (Float64Array churn) caught by the old-gen
+//       lane, C3 (16MB retained pool) caught by arrayBuffers, a ring control
+//       still caught by scavenges, and C1 (600KB-string LO churn) recorded as
+//       a documented hole (decisions/0003 A4 -- fires no countable signal on
+//       this Node). All judged at DEFAULT thresholds.
 //   T4  suiteGate reduction gate -- P4 (skipped).
 //   T5  footprint + 4096-cycle soak -- bounds the control's heap growth and
 //       proves the churn loop retains nothing (lite-leak registration count
@@ -22,6 +27,7 @@
 //   TORTURE_CONTROL=stock-control npm run torture   -> T1 MUST fail
 //   TORTURE_CONTROL=leaky-soak    npm run torture    -> T5 MUST fail
 //   TORTURE_CONTROL=no-doors      npm run torture    -> T2 MUST fail
+//   TORTURE_CONTROL=zero-signal   npm run torture    -> T3 MUST fail
 //
 // @zakkster/lite-gc-profiler and @zakkster/lite-leak are devDependencies,
 // never runtime deps: the library ships zero dependencies. They gate the
@@ -32,6 +38,7 @@ import {GcProfiler, checkNoGc} from '@zakkster/lite-gc-profiler';
 import {createLeakTracker} from '@zakkster/lite-leak';
 import {die, note, runChild, TIER_SKIP, CONTROL} from './torture/harness.mjs';
 import {t2} from './torture/t2-doors.mjs';
+import {t3} from './torture/t3-bypass.mjs';
 import {
     measure, suiteGate, toNDJSON,
     controlPositive, controlNegative, _controlKeepAlive
@@ -61,12 +68,14 @@ async function t1() {
 
     const b1 = runChild(fx('t1b-scale.mjs'), Object.assign({PGT_N: '50000'}, base)).result;
     note('T1b N=' + b1.N + ': minorLo=' + b1.minorLo + ' minorHi=' + b1.minorHi +
-        ' majorHi=' + b1.majorHi + ' retainedKB_hi=' + b1.retainedKB_hi.toFixed(1) +
+        ' majorHi=' + b1.majorHi + ' oldGenHi=' + b1.oldGenHi + ' arrayBuffersKB_hi=' +
+        b1.arrayBuffersKB_hi.toFixed(1) + ' retainedKB_hi=' + b1.retainedKB_hi.toFixed(1) +
         ' keepAlive=' + b1.keepAlive + ' node ' + b1.node);
 
     const b2 = runChild(fx('t1b-scale.mjs'), Object.assign({PGT_N: '200000'}, base)).result;
     note('T1b N=' + b2.N + ': minorLo=' + b2.minorLo + ' minorHi=' + b2.minorHi +
-        ' majorHi=' + b2.majorHi + ' retainedKB_hi=' + b2.retainedKB_hi.toFixed(1) +
+        ' majorHi=' + b2.majorHi + ' oldGenHi=' + b2.oldGenHi + ' arrayBuffersKB_hi=' +
+        b2.arrayBuffersKB_hi.toFixed(1) + ' retainedKB_hi=' + b2.retainedKB_hi.toFixed(1) +
         ' keepAlive=' + b2.keepAlive + ' node ' + b2.node);
 
     const c = runChild(fx('t1c-poison.mjs'), base).result;
@@ -90,6 +99,21 @@ async function t1() {
             die('T1 ring scaling N=' + b.N + ': minorHi=' + b.minorHi +
                 ' did not scale over minorLo=' + b.minorLo +
                 ' (need >=' + (2 * b.minorLo) + ') node ' + b.node);
+        }
+        // Zero-spurious proof, in-torture half (decisions/0003): the ring
+        // control -- a genuinely zero-alloc-old-gen, zero-external hot path --
+        // must not trip either NEW lane at library defaults. maxOldGen 0,
+        // maxArrayBuffersKB 64. Skipped under the stock-control sabotage, which
+        // deliberately allocates.
+        if (!sabotage) {
+            if (!(b.oldGenHi <= 0)) {
+                die('T1 ring N=' + b.N + ': oldGenHi=' + b.oldGenHi +
+                    ' > 0 (spurious old-gen on the zero-alloc control) node ' + b.node);
+            }
+            if (!(b.arrayBuffersKB_hi <= 64)) {
+                die('T1 ring N=' + b.N + ': arrayBuffersKB_hi=' + b.arrayBuffersKB_hi.toFixed(1) +
+                    ' > 64 (spurious external on the zero-alloc control) node ' + b.node);
+            }
         }
     }
     if (!(c.heapGrowthKB < 1024)) {
@@ -242,7 +266,7 @@ async function t5() {
 const TIERS = [
     {id: 'T1', name: 'detector matrix (child processes, library defaults)', run: t1},
     {id: 'T2', name: 'fail-closed doors (every door hit from outside)', run: t2},
-    {id: 'T3', name: 'bypass corpus',            skip: 'P3'},
+    {id: 'T3', name: 'bypass corpus (PG-02/PG-03 as permanent fixtures)', run: t3},
     {id: 'T4', name: 'suiteGate reduction gate', skip: 'P4'},
     {id: 'T5', name: 'footprint + 4096-cycle soak', run: t5}
 ];

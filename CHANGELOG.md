@@ -1,5 +1,71 @@
 # Changelog
 
+## [1.5.0] - 2026-09-13
+
+### Added
+
+- **Two new gate signals, chosen from a GC-kind census, close the
+  allocation bypasses (PG-02, PG-03).** The gate now measures FIVE
+  signals: scavenges, custom counters, retained heap, plus (4) **old-gen
+  activity** (`major + incremental`, threshold `maxOldGen` default 0) and
+  (5) **external/arrayBuffers growth** (`memoryUsage().arrayBuffers`
+  delta, threshold `maxArrayBuffersKB` default 64). Both are GATE signals,
+  not a profiler: each over-budget reason ends with "diagnose with
+  @zakkster/lite-gc-profiler". The boundary law holds -- no GC-kind
+  breakdown on results beyond the two composed counters.
+- **The GC-kind census (decisions/0003).** Before any signal froze, a raw
+  `PerformanceObserver` census (`test/probes/census-0003.mjs`, repo-only)
+  logged kind + flags + timing across the bypass corpus, three corpus
+  runs plus a 100-rep x 2 ambient distribution. It falsified the naive
+  design: on Node v26.3.1, C1's 600KB-string LO churn (PG-02) fires
+  `oldGen=0` in-window and a flat settle, so it is a DOCUMENTED HOLE, not
+  a catch (Axis A4). C2's Float64Array churn fires `oldGen=2` (caught).
+  C3's 16MB pool grows `arrayBuffers` 16384KB while retained reads <64KB
+  (caught). Ambient old-gen and arrayBuffers were 0 across all 200 reps,
+  so the defaults (0 / 64) cause zero spurious failures.
+- **`controlLarge` + external detector integrity.** A bounded, mask-gated
+  retained 64KB-ArrayBuffer pool (deterministic 832KB arrayBuffers at the
+  pinned k*N, 13x the gate) validates signal 5 on every `zgcSuite`/`runGate`
+  run, as the third argument to the ONE `validateDetector(pos, neg, large,
+  maxScav)` predicate (no fork). A `largeControl` config override and a
+  negative-control old-gen clause (the arithmetic control must fire 0
+  old-gen) complete the detector. Because a retained-external control
+  leaves a V8 scheduled-scavenge residue that poisons the next
+  scavenge-gated measurement (mechanism proven in decisions/0003, not
+  drainable), `controlLarge` is measured LAST in `runGate` and last in
+  `zgcSuite`'s detector block; nothing scavenge-gated follows it.
+- **`MeasureResult` gains `oldGenLo/oldGenHi` and
+  `arrayBuffersKB_lo/arrayBuffersKB_hi`** (additive -- no existing key
+  changes). `toNDJSON`'s measure line carries them. `formatResult` shows
+  old-gen and arrayBuffers only when nonzero.
+- **Torture T3** activates: the PG-02/PG-03 bypasses as permanent
+  bare-child fixtures at pinned windows, all judged at default thresholds,
+  plus a `TORTURE_CONTROL=zero-signal` lane (test-code only) that zeroes
+  the two new fields in-child and MUST make T3 fail.
+
+### Changed
+
+- **New defaults CAN fail a previously-green suite** -- exactly when a hot
+  path fires an old-gen collection (`maxOldGen: 0`) or grows external
+  memory past 64KB (`maxArrayBuffersKB: 64`). That is the release: the
+  gate now sees PG-03a and PG-03b. The 0/200 ambient census reps are the
+  evidence a genuinely zero-alloc path trips neither.
+- **PG-02 (600KB-string LO churn) is recorded as an uncatchable hole on
+  Node v26.3.1**, not silently "fixed": it fires no countable GC event any
+  lane can gate, and T3's t3a asserts its measured signature so a future
+  Node that closes the hole will flip the fixture.
+- **`allowNoGc: true` with an explicit `maxArrayBuffersKB` throws** (new
+  `NO_ARRAYBUFFERS` door, mirroring `maxRetainedKB`); the arrayBuffers
+  lane is not applied at all when `retainedReliable === false`. The
+  old-gen lane comes from the observer, not `memoryUsage`, so it gates
+  even under `allowNoGc`.
+- **The measurement window and `suiteGate` are byte-identical to v1.4.0.**
+  The observer callback gained two compare-and-increment branches
+  (incremental, weakcb -- outside the hot body); `incremental` is read
+  after `gcc.close()`, and the arrayBuffers captures reuse the existing
+  before/after `memoryUsage()` points. `gc2` and `suiteGate` are
+  untouched (P4 owns suiteGate).
+
 ## [1.4.0] - 2026-09-13
 
 ### Changed
