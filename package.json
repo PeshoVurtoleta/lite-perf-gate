@@ -30,8 +30,10 @@
     "prepublishOnly": "npm test"
   },
   "devDependencies": {
+    "@zakkster/lite-arena": "^1.9.0",
     "@zakkster/lite-gc-profiler": "^1.16.0",
-    "@zakkster/lite-leak": "^1.10.0"
+    "@zakkster/lite-leak": "^1.10.0",
+    "@zakkster/lite-scope": "^1.2.0"
   },
   "keywords": [
     "benchmark",
