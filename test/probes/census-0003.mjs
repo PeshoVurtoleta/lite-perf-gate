@@ -148,19 +148,57 @@ async function censusPass(sc, iters, flushMs, settleMs) {
 
 // --------------------------------------------------------------------------
 // The corpus. Every size is PINNED to the ROADMAP section 2 reproductions:
-// C1 hi = 4000 x 600KB = 2.4GB (PG-02), C2 hi = 4096 x 512KB = 2.1GB (PG-03a),
-// C3 hi = 256 x 64KB = 16MB retained (PG-03b). C4/C5 run at LIBRARY DEFAULTS.
+// C1f hi = 4000 x 600KB = 2.4GB (PG-02; C1 itself is a rope -- see below),
+// C2 hi = 4096 x 512KB = 2.1GB (PG-03a), C3 hi = 256 x 64KB = 16MB retained
+// (PG-03b). C4/C5 run at LIBRARY DEFAULTS.
 // --------------------------------------------------------------------------
 
 const LO_RING = new Array(16).fill(null);
 const CHARS = ['a', 'b', 'c', 'd'];
 
+// C1 as ORIGINALLY censused: String.prototype.repeat returns a cons-rope
+// (~20 nodes, ~2.4KB), so this row measures ~10MB of small young churn, NOT
+// 600KB strings -- kept so the original table stays reproducible. C1f is the
+// real PG-02 shape (decisions/0003, PG-02 re-census amendment).
 const C1 = {
-    name: 'C1 600KB-string LO churn (PG-02)',
+    name: 'C1 600KB-string LO churn (PG-02) -- cons-rope, never flattened',
     N: 500, k: 8,
     setup: function () { return {}; },
     hot: function (_s, n) {
         for (let i = 0; i < n; i++) LO_RING[i & 15] = CHARS[i & 3].repeat(614400);
+    }
+};
+
+// C1f -- the flat PG-02 shape: charCodeAt flattens the rope into one 600KB
+// SeqString (young large-object space). The read is SUNK into s.acc; unused,
+// the optimizing tier DCEs it and the ring holds ropes again (C1fu shows it).
+const C1f = {
+    name: 'C1f 600KB FLAT-string LO churn (PG-02, sunk flatten)',
+    N: 500, k: 8,
+    setup: function () { return {acc: 0}; },
+    hot: function (s, n) {
+        let a = s.acc;
+        for (let i = 0; i < n; i++) {
+            const t = CHARS[i & 3].repeat(614400);
+            a = (a + t.charCodeAt(i & 1023)) & 1023;
+            LO_RING[i & 15] = t;
+        }
+        s.acc = a;
+    }
+};
+
+// C1fu -- the same flatten with the result UNUSED: DCE-fragile, kept as the
+// recorded trap (hi minor collapses once the loop optimizes).
+const C1fu = {
+    name: 'C1fu 600KB-string, UNSUNK charCodeAt (DCE-fragile)',
+    N: 500, k: 8,
+    setup: function () { return {}; },
+    hot: function (_s, n) {
+        for (let i = 0; i < n; i++) {
+            const t = CHARS[i & 3].repeat(614400);
+            t.charCodeAt(1);
+            LO_RING[i & 15] = t;
+        }
     }
 };
 
@@ -202,7 +240,9 @@ const C5 = {
 
 // controlLarge candidates: one 256KB string (> V8's ~128KB regular-object
 // limit, so large-object space) every Mth iteration, into a 16-slot ring.
-// Cost and signal strength here decide decision 3 (placement).
+// Cost and signal strength here decide decision 3 (placement). As originally
+// censused these stored cons-ropes (never flattened); largeFlat() below is
+// the flat twin (decisions/0003, PG-02 re-census amendment).
 const CL_RING = new Array(16).fill(null);
 function largeCandidate(label, mask) {
     return {
@@ -217,7 +257,27 @@ function largeCandidate(label, mask) {
     };
 }
 
-const CORPUS = [C1, C2, C3, C4, C5, largeCandidate('a', 2047), largeCandidate('b', 1023)];
+function largeFlat(label, mask) {
+    return {
+        name: 'C6' + label + 'f FLAT controlLarge candidate 1/' + (mask + 1) + ' x 256KB',
+        N: 200000, k: 8,
+        setup: function () { return {acc: 0}; },
+        hot: function (s, n) {
+            let a = s.acc;
+            for (let i = 0; i < n; i++) {
+                if ((i & mask) === 0) {
+                    const t = CHARS[i & 3].repeat(262144);
+                    a = (a + t.charCodeAt(1)) & 1023;
+                    CL_RING[(i >> 11) & 15] = t;
+                }
+            }
+            s.acc = a;
+        }
+    };
+}
+
+const CORPUS = [C1, C1f, C1fu, C2, C3, C4, C5, largeCandidate('a', 2047), largeCandidate('b', 1023),
+    largeFlat('a', 2047), largeFlat('b', 1023)];
 
 function emit(tag, obj) {
     process.stdout.write(tag + ' ' + JSON.stringify(obj) + '\n');

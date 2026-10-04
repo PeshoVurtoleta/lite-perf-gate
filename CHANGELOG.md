@@ -1,5 +1,34 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **PG-02 is caught. The "C1 documented hole" was a fixture artifact.** The
+  census fixture C1, `CHARS[i & 3].repeat(614400)`, stored a cons-rope (about
+  2.4KB of nodes), not a 600KB string. `String.prototype.repeat` never
+  flattens. The census, torture T3a and the original PG-02 probe therefore
+  measured about 10MB of small young churn (`minorHi 2`), and decisions/0003
+  Axis A4 read it as "2.4GB of large-object churn fires no countable event".
+  With the string flattened (a `charCodeAt` read sunk into scenario state),
+  measured on Node 22.23.3 and 26.8.2 at default thresholds, the pinned
+  N=500 k=8 window fails on BOTH `scavenges:` and `oldgen:` (Node 22 minorHi
+  649..654, oldGenHi 72..82; Node 26 minorHi 24..71, oldGenHi 8..24; 10/10
+  each). It still fails on scavenges with the P3 lanes zeroed. Library code
+  and defaults are unchanged.
+- **Torture T3a asserts the catch** instead of the hole signature. The
+  fixture churns flat strings and must fail with both a `scavenges:` and an
+  `oldgen:` reason. That makes it a second true-positive proof of the old-gen
+  lane, and `TORTURE_CONTROL=zero-signal` now fails T3 at T3a on both Nodes.
+- **Docs corrected:** README (decision summary and "What this is not"),
+  COOKBOOK R3 (the hole paragraph becomes "large strings are ropes until
+  something reads them"), llms.txt signal 1, the `PerfGate.js` header and
+  `controlLarge` comments, and the census probe (new flat rows C1f, C1fu,
+  C6af and C6bf; the rope rows are kept). decisions/0003 gains a
+  PG-02 re-census amendment. Axis D's choice of the arrayBuffers-pool
+  `controlLarge` stands, on corrected grounds: flattened 256KB strings read
+  oldGen 2..4, and 0 on Node 26 with 128MB of unrelated heap.
+
 ## [1.4.3] - 2026-10-04
 
 ### Fixed

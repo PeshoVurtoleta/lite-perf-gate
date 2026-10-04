@@ -336,15 +336,18 @@ them. On a saturated runner that wait can be too short and a genuinely allocatin
 scenario reports zero scavenges -- a false pass. Bump `flushMs` (option) or
 `PERF_GATE_FLUSH_MS` to 250-500 on such hosts.
 
-**The C1 documented hole, honestly.** There is one workload shape this gate
-cannot see: large-object *string* churn. On current V8, gigabytes of
-600 KB-plus string allocation are served without a scavenge, an old-gen
-collection, or an incremental mark that the observer can count -- so a string
-churn that never promotes reads clean on every lane, and no invented signal
-would be honest (decisions/0003). If your hot path is string-heavy, gate its
-*retained* growth and reach for `@zakkster/lite-gc-profiler`'s allocation-rate
-lanes; this instrument's transient-allocation claim is about heap objects, not
-LO strings.
+**Large strings are ropes until something reads them.** `'x'.repeat(n)` and
+`a + b` return a cons-rope: a few small nodes, not n bytes. A scenario that
+builds a big string and never reads it measures the rope, and passes. Once
+something flattens the string (`charCodeAt` does), V8 allocates its bytes in
+young large-object space, and the gate sees it. 600KB-string churn failed on
+scavenges in every measured run, at every heap size. It also failed on
+old-gen on a modest heap, but with a large heap the old-gen reason can drop
+out. This is PG-02, re-measured in
+decisions/0003. When you write a scenario that should represent string work,
+consume the string the way production code does, and sink the result into
+scenario state. A bare `s.charCodeAt(0);` statement is dead code, and the
+optimizer removes it.
 
 **One documented residue.** In the `suiteGate` reducers, a `NaN` slot fails
 closed only when the reducer propagates it (`sum`/`mean`, or `max`/`last` at the

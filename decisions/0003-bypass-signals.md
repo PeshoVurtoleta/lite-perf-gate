@@ -108,6 +108,12 @@ The Float64Array oldGen control at defaults reads `oldGenHi =
 
 ### Axis A -- event-class counter: **A4** (not the expected A2)
 
+> Withdrawn in part 2026-10-04: the C1 fixture stored a cons-rope, not a
+> 600KB string, so "C1 is a documented hole" below is a fixture artifact.
+> Flattened, PG-02 is caught by the scavenge AND old-gen lanes on Node 22
+> and 26. The oldGen composition (`major + incremental`) and the C2 catch
+> stand. See "Amendment (2026-10-04) -- PG-02 re-census" at the end.
+
 C1 hi in-window `major=0, incremental=0` -> `oldGen=0`, identical across
 3 runs. A2 requires `major + incremental >= 4`; it is 0, so A2 is
 impossible. A3 requires `settleTotal(C1) > settleTotal(C5) + 1`; both are
@@ -155,6 +161,11 @@ lane on a signal that is 0-or-1-or-2 is noise amplification. Absolute:
 The pasted D-axis is oldGen-centric and assumed a 256KB-string
 `controlLarge` would trip `oldGenHi >= 4`. The census falsifies both
 premises:
+
+   (Point 1's premise is corrected by the PG-02 re-census amendment: C6a/C6b
+   stored cons-ropes. Flattened they DO fire old-gen, but 2..4 on a clean
+   heap and 0 under 128MB of unrelated heap on Node 26 -- the string
+   `controlLarge` stays dead, for that reason.)
 
 1. C6a and C6b (the two string candidates) trip `oldGen=0` AND
    `arrayBuffers=0` -- they are not controls for any new signal. D1/D2
@@ -317,12 +328,274 @@ with a different fix (ordering) -- the two must not be conflated.
 - C1's 600KB-string LO churn (PG-02) is NOT caught on Node v26.3.1 and is
   recorded as a documented hole; T3 asserts its signature so a future
   Node that DOES fire an old-gen event on it will flip t3a to caught and
-  the fixture will tell us.
+  the fixture will tell us. (Withdrawn 2026-10-04 -- C1 was a cons-rope;
+  flat PG-02 is caught. See the PG-02 re-census amendment.)
 - `MeasureResult` gains `oldGenLo/_Hi` and `arrayBuffersKB_lo/_hi`
   (additive; no existing key changes). `toNDJSON`'s measure line carries
   them. Hand-built results without the fields (suiteGate's per-budget
   `verdict()` call) are gated on field presence and keep passing.
 - `allowNoGc: true` with an explicit `maxArrayBuffersKB` now throws, the
   same door as `maxRetainedKB`.
+
+## Amendment (2026-10-04) -- Node 22: C2 is not an old-gen fixture there; T3b widened to a 64-slot ring
+
+Trigger: `npm run torture` failed T3b on Node v22.23.3 (pass on v26.8.2), at
+1.4.2 HEAD and at 1.4.3: `T3b C2 ... pass=false oldGenHi=0 reasons=["scavenges:
+84 > 2"]`. The gate still CAUGHT C2 -- through the scavenge lane, not the
+old-gen lane T3b asserts. T3b is the oldGen lane's only true-positive proof
+(Axis D: "torture T3's must-catch C2 fixture ... prove the true positive"), so
+on Node 22 that lane was unproven. Measured on darwin 27.0.0, Node v22.23.3 and
+v26.8.2, flags `--expose-gc --max-semi-space-size=4`, bare children.
+
+### Census, same method and probe (`PGC_MODE=corpus`, 3 runs per Node)
+
+| scenario (hi) | Node | minor | major | incr | oldGen | abKB |
+| --- | --- | --- | --- | --- | --- | --- |
+| C2 512KB Float64 churn, 16-slot ring | 26.8.2 | 1 | 1 | 1 | **2** | 0 |
+| C2 512KB Float64 churn, 16-slot ring | 22.23.3 | **84** | 0 | 0 | **0** | 0 |
+
+Identical in all 3 runs on each Node. Every other corpus row (C1, C3, C4, C5,
+C6a/b) has the same kind signature on both Nodes as the original table.
+Flags: Node 26 `{minor/0:1, incremental/0:1, major/40:1}` (40 = the
+external-memory major, as recorded above); Node 22 `{minor/0:84}`.
+
+Mechanism (measured counts; reading): Node 22 runs a scavenge about every 49
+buffer allocations (4096 / 84). A buffer that is dead within 16 allocations
+never survives a scavenge, so it never promotes, and the external churn is
+reclaimed entirely by the young generation. Node 26 does not scavenge on it
+and instead fires one external-memory major. The 16-slot C2 is NOT a bypass
+on Node 22 -- the scavenge lane already catches it -- but it is also not an
+old-gen fixture there.
+
+### The 16-slot ring is heap-state noise on Node 22, not a signal
+
+Real `measure()` at the pinned window, bare child, C2 16-slot ring, with N MB of
+unrelated retained old-space ballast allocated first:
+
+| ballast | 0 | 2MB | 4MB | 6MB | 8MB |
+| --- | --- | --- | --- | --- | --- |
+| Node 22 oldGenHi | 0 | 0 | 2 | 2 | 2 |
+| Node 26 oldGenHi | 2 | 2 | 2 | 2 | 2 |
+
+The same 0 -> 2 flip appeared with an import-time probe that allocated other
+candidates' rings, and once in a raw-observer pass (`major/40` in-window at
+ring 16 on Node 22). On Node 22 a C2 old-gen reading depends on the
+surrounding heap, so it cannot be a must-catch.
+
+### Ring-size sweep (real `measure()`, 3 reps per cell, effective live slots)
+
+| live slots (x 512KB) | 16 | 32 | 64 | 128 |
+| --- | --- | --- | --- | --- |
+| Node 22 oldGenHi | 0 | 2 / 10 / 16 (unstable) | 36..42 | 40..42 |
+| Node 26 oldGenHi | 2 | 2 | 2 | 2 |
+
+At 64 slots every buffer outlives at least one scavenge (64 > ~49), promotes,
+and dies in old space. Node 22's flags then read `{minor/0:85, incremental/0:20,
+major/0:20}` -- ordinary incremental-marking majors, not forced and not the
+external-memory flag. 64 is 2x the unstable boundary; 128 adds no signal and
+doubles the transient live set (64MB), so 64 was chosen.
+
+### The fix: T3b's fixture ring 16 -> 64; the assertion is unchanged
+
+`t3b-ab-churn.mjs` keeps the size (512KB Float64Array), the pinned window
+(N=512 k=8, ~2.1GB churn) and default thresholds, and changes only the ring
+(16 -> 64 slots, a 32MB transient live set). `t3-bypass.mjs`'s assertion
+(`pass === false` and an `oldgen:` reason) is byte-identical. Evidence:
+
+- Real `measure()`, bare child, HEAD `PerfGate.js`, 20 reps per Node: Node 22
+  `oldGenHi 30..56`, `minorHi 63..112`, caught by oldgen 20/20 (oldgen AND
+  scavenges); Node 26 `oldGenHi 2`, `minorHi 1`, caught 20/20 with `oldgen:`
+  as the ONLY reason (the PG-03a signature is unchanged on Node 26). A further
+  20 reps per Node on the pre-1.4.3 library: Node 22 `38..42`, Node 26 `2`.
+- Ballast 0/4/8/16/32MB at 64 slots: Node 22 `oldGenHi 40/40/42/46/56`
+  (monotone up, never toward 0); Node 26 `2` throughout.
+- `TORTURE_CONTROL=zero-signal`: T3 fails at T3b on BOTH Nodes (Node 22
+  `reasons=["scavenges: 83 > 2"]`, Node 26 `pass=true reasons=[]`). The
+  oldgen lane is load-bearing on both.
+- Full `npm run torture` with the patched fixture: Node 22 T1-T5 `ok`, the
+  first green Node 22 torture run.
+
+### Negative side on Node 22 (`maxOldGen: 0` default)
+
+Ambient stage, 100 reps each at hi (1.6M), Node v22.23.3: C4 ring `oldGen
+0/0/0/0` (min/p50/p95/max), `abKB 0/0/0/0`; C5 arithmetic `oldGen 0/0/0/0`,
+`abKB 0/0/0/0`. 0 of 200 reps exceed either default on Node 22 too. The
+defaults do not move.
+
+### Rejected
+
+- A per-version T3b expectation (Node 22: "caught by scavenges"). On Node 22
+  it would leave the oldGen lane with NO true-positive proof; only t3c's
+  arrayBuffers catch would keep the zero-signal control failing there.
+  Rejected as a weaker gate.
+- Accepting any reason in T3b (`pass === false` only). That is a weakened
+  assertion and would not prove the oldgen lane. Rejected.
+- Other shapes that reach old-gen on both Nodes, measured and not chosen:
+  flattened 600KB strings (oldGen 12..16 / 4..8, but ~530ms and a new shape);
+  `new Array(65536)` churn (~1s, Node 22 6..12 jittery); mid-life
+  `{x,y,z,w}` rings of 2^17/2^18 slots (oldGen 2..4 on both, but scavenges
+  40..56, and one Node 26 rep pretenured to `minorHi 0`). The 64-slot C2
+  keeps the PG-03a shape, the size and the window, and has the largest
+  stable margin.
+
+## Amendment (2026-10-04) -- PG-02 re-census: C1 was a cons-rope; flat PG-02 is caught
+
+Trigger: `String.prototype.repeat` returns a cons-rope, not a flat string.
+Retaining 100 x `'a'.repeat(614400)` grows `heapUsed` by ~60KB; after a
+`charCodeAt` on each (which flattens) it grows by ~60003KB (Node 22.23.3 and
+26.8.2). C1 (`CHARS[i & 3].repeat(614400)` into a 16-slot ring) never read its
+strings, so the census, the T3a fixture and the original PG-02 probe all
+measured ~20 small rope nodes per iteration -- not 600KB. Axis A4's "2.4GB
+of large-object string churn fires NO countable GC event" described a
+fixture that churned no large objects. Measured on darwin 27.0.0, Node
+v22.23.3 and v26.8.2, flags `--expose-gc --max-semi-space-size=4`, host load
+average 25..40 (other sessions running) throughout.
+
+### What the rope and the flat string actually allocate
+
+`v8.getHeapSpaceStatistics()` deltas, three 600KB strings retained:
+
+| step | Node 22.23.3 | Node 26.8.2 |
+| --- | --- | --- |
+| `repeat(614400)` x3 | new_space +7KB | new_space +8KB |
+| then `charCodeAt` x3 (flatten) | new_large_object_space +600KB, large_object_space +1200KB | same |
+
+A rope is ~2.4KB of young nodes. C1 hi (4000 iters) is ~10MB of small young
+churn: `minorHi 2`, equal to the default `maxScavenges` 2, so it passes at
+the threshold edge -- correct for what it allocates. A flattened 600KB string
+is allocated in YOUNG large-object space (reading: reclaimed by scavenges;
+ring survivors end in old LO space and need a major) -- which is why both
+lanes see it below.
+
+### The flatten must be sunk
+
+Ring-held heap (16 slots) after the k-th `hot(500)` call, bare process:
+
+| variant (600KB) | Node | call 1 | 10 | 50 | 200 |
+| --- | --- | --- | --- | --- | --- |
+| rope (C1) | 22 / 26 | 10KB | 10KB | 10KB | 10KB |
+| `t.charCodeAt(1);` unused | 22 | 9601KB | **10KB** | 10KB | 10KB |
+| `t.charCodeAt(1);` unused | 26 | 9601KB | **6KB** | 9601KB | **10KB** |
+| `a = (a + t.charCodeAt(..)) & 1023` (sunk) | 22 / 26 | 9600KB | 9601KB | 9601KB | 9601KB |
+
+Unused, the optimizing tier eliminates the read and the ring silently holds
+ropes again (the 256KB C6 shapes behave the same). Every flat shape below
+SINKS the char code into scenario state.
+
+### Census, same method and probe (`PGC_MODE=corpus`, 3 runs per Node)
+
+In-window kinds at hi (k*N), from the amended `census-0003.mjs`. New rows: C1f
+(flat, sunk), C1fu (flat, unsunk), C6af/C6bf (flat twins of C6a/C6b). The rope
+rows reproduce the original table.
+
+| scenario (hi) | Node | minor | oldGen | settleTot | abKB | hotMs |
+| --- | --- | --- | --- | --- | --- | --- |
+| C1 rope | 22 / 26 | 2 | 0 | 2 | 0 | 1..4 |
+| **C1f flat 600KB** | 22 | 653..655 | **42..48** | 2 | 0 | 801..1010 |
+| **C1f flat 600KB** | 26 | 41..48 | **10..12** | 2 | 0 | 257..292 |
+| C1fu unsunk | 22 | 143 / 656 / **0** | 14 / 54 / **0** | 2 | 0 | 182 / 821 / **1** |
+| C1fu unsunk | 26 | 40..48 | 8..14 | 2 | 0 | 257..298 |
+| C6a / C6b rope | 22 / 26 | 0 | 0 | 2 | 0 | 3..6 |
+| C6af flat 1/2048 | 22 | 51 | 2 | 2 | 0 | 55..77 |
+| C6af flat 1/2048 | 26 | 3 | 2 | 2 | 0 | 40..41 |
+| C6bf flat 1/1024 | 22 | 102..103 | 4 / 2 / 4 | 2 | 0 | 112..124 |
+| C6bf flat 1/1024 | 26 | 6..7 | 2 | 2 | 0 | 54..66 |
+
+C1f flags: `{minor/0, incremental/0, major/64}` on both Nodes (one Node 22 run
+adds a `major/0`): ordinary incremental-marking majors, not the
+external-memory flag 40. Lo pass C1f: Node 22 minor 80, oldGen 8..10; Node 26
+minor 8..44, oldGen 2..10. The C1fu rows are the DCE trap inside the census
+itself: on Node 22 the third run read minor 0, oldGen 0 in 1ms, which means no
+600KB string was built at all, so an unsunk scenario can measure perfectly
+clean. An earlier scratch run of the same rows (sunk read at a fixed index)
+gave C1f Node 22 oldGen 72..78 and Node 26 22..46. Side reading, consistent
+with the Node 22 amendment's ballast table: with C1f/C1fu run first in the
+same process, the 16-slot C2 row read oldGen 0..20 on Node 22 across six runs
+(heap state).
+
+### Real `measure()` at the pinned window, bare child, defaults
+
+The proposed T3a fixture (C1f shape, N=500 k=8), 10 reps per Node:
+
+| Node | caught | reasons | minorHi | oldGenHi | one measure |
+| --- | --- | --- | --- | --- | --- |
+| 22.23.3 | 10/10 | scavenges + oldgen | 649..654 | 72..82 | 2.30..2.63s |
+| 26.8.2 | 10/10 | scavenges + oldgen | 24..71 | 8..24 | 0.83..1.00s |
+
+`TORTURE_CONTROL=zero-signal` equivalent (oldGenHi/arrayBuffersKB_hi zeroed
+before the verdict, i.e. the pre-P3 verdict), 3 reps per Node: still
+`pass=false` on `scavenges:` alone (Node 22 minorHi 654..655, Node 26
+25..29), with no `oldgen:` reason. So the flat PG-02 shape was never a
+bypass: the scavenge lane catches it with or without the P3 lanes. N=125
+was measured too (Node 26 oldGenHi 2..4, too thin a margin) and rejected;
+the window stays pinned at N=500.
+
+### The old-gen catch is heap-state dependent; the scavenge catch is not
+
+Same fixture, N MB of unrelated retained old-space ballast allocated first
+(3 reps per cell, 10 at 0MB):
+
+| ballast | 0 | 8MB | 32MB | 64MB | 128MB | 256MB |
+| --- | --- | --- | --- | --- | --- | --- |
+| Node 22 oldGenHi | 72..82 | 56 | 28 | 16..18 | 8..10 | 4 |
+| Node 26 oldGenHi | 8..24 | 10..26 | 2..4 | 0 / 2 / 2 | **0** | **0** |
+| caught (both Nodes) | yes | yes | yes | yes | yes | yes |
+
+All 50 runs are `pass=false` through `scavenges:` (minimum minorHi 14). The
+`oldgen:` reason disappears on Node 26 at >= 64MB of other heap -- a larger
+heap raises the old-gen limit, so the promoted strings are not collected
+inside the window. That is a property of the shape, not a defect of the lane,
+and it does NOT appear in the bare-child fixture (0MB ballast).
+
+### Axis D point 1, re-read
+
+C6a/C6b read `oldGen=0, arrayBuffers=0` because they stored ropes; the
+premise "the string candidates trip nothing" is false. Real `measure()` at the
+pinned `{N:200000, k:8}` (9 reps per cell at 0MB, 3 at 32/128MB):
+
+| candidate | Node | oldGenHi @0MB | @32MB | @128MB | minorHi | one measure |
+| --- | --- | --- | --- | --- | --- | --- |
+| C6af flat | 22 | 2 | 2 | 2 / 0 / 2 | 51..52 | 318..402ms |
+| C6af flat | 26 | 2 | 2 | **0** | 10..52 | 250..330ms |
+| C6bf flat | 22 | 4 | 2 | 2 | 102..104 | 400..490ms |
+| C6bf flat | 26 | 2 | 2 | **0** | 23..104 | 260..330ms |
+
+The conclusion -- no string `controlLarge` -- STANDS, on corrected grounds:
+the flat candidates read 2 on Node 26 (below D1/D2's `oldGenHi >= 4`), and
+`controlLarge` is measured inside the CONSUMER's process, whose heap size is
+unknown; at 128MB of heap both read 0 on Node 26, so a floor of 1 would fail
+detector validation for any large application. Point 2's "the only cheap way
+to fire `oldGen >= 4` is Float64Array churn" is false on Node 22 (C6bf reads
+4 in ~450ms) and true on Node 26. Point 3 and the arrayBuffers-pool
+`controlLarge` (`CONTROL_LARGE_FLOOR` 277) are untouched.
+
+### The fix
+
+- T3a churns FLAT strings (sunk `charCodeAt` read), size 600KB, ring 16 and
+  window N=500 k=8 unchanged, and asserts `pass === false` with BOTH a
+  `scavenges:` and an `oldgen:` reason. It replaces the hole-signature
+  assertion (which expected `pass === true`); nothing is loosened -- the
+  fixture went from "must pass" to "must be caught by two lanes".
+- T3a is now a second true-positive proof of the old-gen lane next to T3b,
+  and `TORTURE_CONTROL=zero-signal` fails T3 at T3a on both Nodes (the
+  `oldgen:` reason vanishes; measured above and in a full torture run).
+- The census probe gains C1f, C1fu, C6af, C6bf; C1/C6a/C6b stay as-is so the
+  original table remains reproducible.
+- Docs that called C1 a documented hole (README, COOKBOOK R3, CHANGELOG,
+  `PerfGate.js` comments, torture headers) are corrected. Library code, the
+  defaults and every other threshold are unchanged.
+- The Node 22 amendment above lists "flattened 600KB strings (oldGen
+  12..16 / 4..8, but ~530ms)" under Rejected; those figures are the UNSUNK
+  shape (DCE-fragile). The sunk shape reads 72..82 / 8..24 at 0.8..2.6s per
+  measure. T3b's choice of the 64-slot C2 is unaffected.
+
+### Rejected
+
+- Keeping a rope fixture that asserts `pass === true`. It asserts a V8
+  representation detail (`repeat` returns a rope), not a gate property.
+- The unsunk flatten (`t.charCodeAt(1);`): DCE-fragile, measured above.
+- Asserting only `oldgen:` in T3a. Both lanes fire in every clean run on
+  both Nodes, and the scavenge lane is the heap-independent one.
+- Lowering N for speed: N=125 reads oldGenHi 2..4 on Node 26.
 
 MIT (c) Zahary Shinikchiev <shinikchiev@yahoo.com>

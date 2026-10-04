@@ -1,12 +1,23 @@
-// T3a child: the PG-02 bypass -- 600KB-string large-object churn. Measured at
-// the pinned window N=500 k=8 (~2.4GB churned), then judged at DEFAULT
-// thresholds. The census (decisions/0003, Axis A4) proved this fires NO
-// countable GC event on Node v26.3.1: oldGen 0, arrayBuffers 0, minor 2
-// (== default maxScavenges), retained < 64KB. It PASSES the gate -- a
-// documented, measured hole, asserted as such by t3-bypass.mjs. If a future
-// Node fires an old-gen event here, this fixture flips to caught and tells us.
-// PGT_SABOTAGE=zero-signal (test-only) zeroes the two new fields before the
-// verdict; it does not change this hole. Emits one PGT1 line on stdout.
+// T3a child: the PG-02 bypass -- 600KB FLAT-string large-object churn into a
+// 16-slot ring. Measured at the pinned window N=500 k=8 (~2.4GB of flat string
+// bytes), then judged at DEFAULT thresholds. MUST be caught by BOTH the
+// scavenge lane and the old-gen lane on every supported Node (decisions/0003,
+// PG-02 re-census amendment):
+//   Node 22.23: minorHi 649..654, oldGenHi 72..82 (10/10 clean bare children).
+//   Node 26.8:  minorHi 24..71,   oldGenHi 8..24  (10/10).
+// Why the charCodeAt read: String.prototype.repeat returns a cons-rope (~20
+// small nodes, ~2.4KB), not a 600KB string. The original fixture stored the
+// rope, churned ~10MB of young nodes (minorHi 2 == default maxScavenges) and
+// was recorded as an uncatchable "hole" -- a fixture artifact. charCodeAt
+// flattens the rope into one 600KB SeqString, which V8 allocates in YOUNG
+// large-object space (scavenge-reclaimed; ring survivors promote to old LO
+// space and need a major). The read is SUNK into s.acc: left unused, the
+// optimizing tier DCEs it and the ring silently holds ropes again (measured on
+// both Nodes once the loop optimizes).
+// PGT_SABOTAGE=zero-signal (test-only) zeroes oldGenHi/arrayBuffersKB_hi
+// before the verdict: the oldgen reason disappears (scavenges still catches),
+// so T3a's must-catch-by-oldgen assertion fails and the tier fails. Emits one
+// PGT1 line on stdout.
 if (typeof globalThis.gc !== 'function') { process.stderr.write('fixture: missing --expose-gc\n'); process.exit(2); }
 
 import {measure, verdict} from '../../../PerfGate.js';
@@ -14,10 +25,16 @@ import {measure, verdict} from '../../../PerfGate.js';
 const RING = new Array(16).fill(null);
 const CHARS = ['a', 'b', 'c', 'd'];
 const scenario = {
-    name: 't3a 600KB-string LO churn (PG-02)',
-    setup: function () { return {}; },
-    hot: function (_s, n) {
-        for (let i = 0; i < n; i++) RING[i & 15] = CHARS[i & 3].repeat(614400);
+    name: 't3a 600KB flat-string LO churn (PG-02)',
+    setup: function () { return {acc: 0}; },
+    hot: function (s, n) {
+        let a = s.acc;
+        for (let i = 0; i < n; i++) {
+            const t = CHARS[i & 3].repeat(614400);
+            a = (a + t.charCodeAt(i & 1023)) & 1023;
+            RING[i & 15] = t;
+        }
+        s.acc = a;
     }
 };
 

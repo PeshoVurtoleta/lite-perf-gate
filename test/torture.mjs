@@ -13,11 +13,11 @@
 //   T2  fail-closed doors -- every door hit from OUTSIDE, each with its
 //       passing twin, plus two bare children without --expose-gc.
 //   T3  bypass corpus -- the PG-02/PG-03 allocation bypasses as permanent
-//       bare-child fixtures: C2 (Float64Array churn) caught by the old-gen
-//       lane, C3 (16MB retained pool) caught by arrayBuffers, a ring control
-//       still caught by scavenges, and C1 (600KB-string LO churn) recorded as
-//       a documented hole (decisions/0003 A4 -- fires no countable signal on
-//       this Node). All judged at DEFAULT thresholds.
+//       bare-child fixtures: C1 (600KB flat-string LO churn) caught by the
+//       scavenge AND old-gen lanes, C2 (Float64Array churn) caught by the
+//       old-gen lane, C3 (16MB retained pool) caught by arrayBuffers, and a
+//       ring control still caught by scavenges (decisions/0003). All judged
+//       at DEFAULT thresholds.
 //   T4  suiteGate reduction gate -- measureOps over suiteGate on a
 //       preallocated 1M-record slab with 8 budgets, gated on per-record
 //       retained bytes (1M-vs-1K difference), checkOps(maxBytesPerOp),

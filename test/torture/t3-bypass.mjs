@@ -1,17 +1,17 @@
 // test/torture/t3-bypass.mjs -- T3 tier: the allocation-bypass corpus as
 // permanent fixtures (PG-02 / PG-03a / PG-03b), each measured in a bare child
-// at a pinned deterministic window and judged at DEFAULT thresholds. Where the
-// census (decisions/0003) proved a bypass is catchable, T3 asserts it is
-// caught by its recorded signal; where it proved a bypass fires no countable
-// signal on this Node (C1, Axis A4), T3 asserts the measured HOLE so a future
-// Node that closes it will flip the fixture.
+// at a pinned deterministic window and judged at DEFAULT thresholds. Each
+// bypass is asserted CAUGHT by its recorded signal (decisions/0003). T3a was
+// once asserted as a "documented hole" (Axis A4); the PG-02 re-census showed
+// that fixture stored a cons-rope, not a 600KB string, so it now churns flat
+// strings and must be caught (decisions/0003, PG-02 re-census amendment).
 //
 // T6 control-for-the-control: TORTURE_CONTROL=zero-signal routes
 // PGT_SABOTAGE=zero-signal into every child, which zeroes oldGenHi and
 // arrayBuffersKB_hi BEFORE the child's verdict (test-code only, never a library
-// flag). That defeats the two new lanes, so t3b (oldgen) and t3c (arrayBuffers)
-// are no longer caught and the tier MUST fail -- proving the new signals are
-// load-bearing.
+// flag). That defeats the two new lanes, so t3a and t3b (oldgen) and t3c
+// (arrayBuffers) are no longer caught by their lane and the tier MUST fail --
+// proving the new signals are load-bearing.
 
 import {fileURLToPath} from 'node:url';
 import {die, note, runChild, CONTROL} from './harness.mjs';
@@ -31,9 +31,8 @@ export async function t3() {
     const env = CONTROL === 'zero-signal' ? {PGT_SABOTAGE: 'zero-signal'} : {};
 
     const a = runChild(fx('t3a-lo-string.mjs'), env).result;
-    note('T3a C1 600KB-string LO churn (PG-02): pass=' + a.pass + ' oldGenHi=' + a.oldGenHi +
-        ' arrayBuffersKB_hi=' + a.arrayBuffersKB_hi.toFixed(0) + ' minorHi=' + a.minorHi +
-        ' retainedKB_hi=' + a.retainedKB_hi.toFixed(0) + ' node ' + a.node);
+    note('T3a C1 600KB flat-string LO churn (PG-02): pass=' + a.pass + ' oldGenHi=' + a.oldGenHi +
+        ' minorHi=' + a.minorHi + ' reasons=' + JSON.stringify(a.reasons) + ' node ' + a.node);
 
     const b = runChild(fx('t3b-ab-churn.mjs'), env).result;
     note('T3b C2 512KB Float64Array churn (PG-03a): pass=' + b.pass + ' oldGenHi=' + b.oldGenHi +
@@ -48,15 +47,14 @@ export async function t3() {
     note('T3d ring scavenge control: pass=' + d.pass + ' minorHi=' + d.minorHi +
         ' reasons=' + JSON.stringify(d.reasons) + ' node ' + d.node);
 
-    // t3a -- the A4 documented hole. C1 fires no countable signal on this Node,
-    // so it PASSES at defaults; T3 asserts the measured signature of the hole.
-    // The zero-signal sabotage does not change it (both new fields already 0).
-    if (!(a.pass === true && a.oldGenHi === 0 && a.arrayBuffersKB_hi < 64 &&
-          a.minorHi <= 2 && a.retainedKB_hi < 64)) {
-        die('T3a: C1 documented hole (A4) changed signature -- pass=' + a.pass +
-            ' oldGenHi=' + a.oldGenHi + ' arrayBuffersKB_hi=' + a.arrayBuffersKB_hi +
-            ' minorHi=' + a.minorHi + ' retainedKB_hi=' + a.retainedKB_hi +
-            ' (expected pass=true, oldGen 0, arrayBuffers<64, minor<=2, retained<64) node ' + a.node);
+    // t3a -- must be CAUGHT by BOTH the scavenge lane (flat LO strings are
+    // allocated in young large-object space) and the oldgen lane (ring
+    // survivors promote to old LO space). Under zero-signal sabotage the oldgen
+    // reason disappears and this assertion fails, failing the tier.
+    if (!(a.pass === false && needle(a.reasons, 'scavenges:') && needle(a.reasons, 'oldgen:'))) {
+        die('T3a: C1 flat 600KB-string churn must be caught by scavenges AND oldgen -- pass=' +
+            a.pass + ' minorHi=' + a.minorHi + ' oldGenHi=' + a.oldGenHi +
+            ' reasons=' + JSON.stringify(a.reasons) + ' node ' + a.node);
     }
 
     // t3b -- must be CAUGHT by the oldgen lane. Under zero-signal sabotage the
@@ -81,6 +79,6 @@ export async function t3() {
             ' reasons=' + JSON.stringify(d.reasons) + ' node ' + d.node);
     }
 
-    note('T3 ACTIVE: 4 bypass fixtures -- C2 caught by oldgen, C3 by arrayBuffers, ' +
-        'ring by scavenges, C1 (PG-02) recorded as a documented hole (decisions/0003 A4)');
+    note('T3 ACTIVE: 4 bypass fixtures -- C1 (PG-02) caught by scavenges and oldgen, ' +
+        'C2 by oldgen, C3 by arrayBuffers, ring by scavenges');
 }

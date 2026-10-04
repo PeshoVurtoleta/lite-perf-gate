@@ -29,8 +29,9 @@
  *   decisions/0002-fail-closed.md      -- the fail-closed door policies; PG-04,
  *     PG-05, PG-08, PG-09, PG-11, PG-14.
  *   decisions/0003-bypass-signals.md   -- the GC-kind census that chose the
- *     old-gen and arrayBuffers lanes, controlLarge, and the C1 documented hole;
- *     PG-02, PG-03a, PG-03b.
+ *     old-gen and arrayBuffers lanes and controlLarge, and the PG-02 re-census
+ *     (C1 was a cons-rope; flat 600KB-string churn is caught); PG-02, PG-03a,
+ *     PG-03b.
  *   decisions/0004-record-doors.md     -- suiteGate record doors, inherited-key
  *     hardening, CONT rejection, minCount, and the T4 cost; PG-06, PG-12, PG-13.
  *
@@ -452,10 +453,12 @@ export const controlNegative = {
 // controlLarge -- the detector control for the EXTERNAL/arrayBuffers signal
 // (signal 5). The census (decisions/0003) proved the two things that fix this
 // shape: (1) 256KB-string LO churn -- the planned controlLarge candidate --
-// trips NEITHER new signal on Node v26.3.1 (oldGen 0, arrayBuffers 0), so it
-// is not a control; (2) the oldGen positive control at suite defaults
-// (Float64Array churn) costs ~2730ms and jitters 2744..2944, i.e. a per-run
-// oldGen floor is noise amplification (Axis C's own rejection). A mask-gated
+// reads oldGen only 2..4 once flattened (the census rows that read 0 stored
+// cons-ropes; PG-02 re-census) and 0 on Node 26 with 128MB of unrelated heap,
+// so it cannot be a control inside a consumer's process; (2) the oldGen
+// positive control at suite defaults (Float64Array churn) costs ~2730ms and
+// jitters 2744..2944, i.e. a per-run oldGen floor is noise amplification
+// (Axis C's own rejection). A mask-gated
 // ACCUMULATING 64KB-ArrayBuffer pool, by contrast, is measured DETERMINISTIC
 // at 832KB arrayBuffers (6/6 reps), oldGen 0, ~200ms at the pinned
 // {N:200000,k:8} window below -- 13x the 64KB gate, so the same measurement
