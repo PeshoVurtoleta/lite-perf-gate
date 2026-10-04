@@ -65,6 +65,31 @@ test('negative control forces ~0 scavenges', async function () {
     assert.ok(minorHi <= 2, 'negative control forced ' + minorHi + ' scavenges (3 attempts)');
 });
 
+// The negative control must not allocate in ANY tier: on a loaded CI runner
+// re-optimization is slow and the loop runs in the interpreter for part of the
+// window. --jitless pins it there for the whole window, deterministically
+// (bare children, 1MB pin, the default N/k). The 1.4.2 shape is the teeth: it
+// boxes its out-of-Smi-range sum and reads 2/24 here, so a regression to any
+// boxing shape fails this test every run, not one CI run in N.
+test('negative control is zero-alloc in the interpreter (--jitless, bare child)', function () {
+    const url = pathToFileURL(fileURLToPath(new URL('../PerfGate.js', import.meta.url))).href;
+    function interp(scenarioSrc) {
+        const code = 'import { measure, controlNegative } from ' + JSON.stringify(url) + ';\n' +
+            'const r = await measure(' + scenarioSrc + ', { N: 200000, k: 8 });\n' +
+            'console.log(JSON.stringify([r.minorLo, r.minorHi]));\n';
+        const r = spawnSync(process.execPath,
+            ['--jitless', '--expose-gc', '--min-semi-space-size=1', '--max-semi-space-size=1',
+                '--input-type=module', '-e', code],
+            { encoding: 'utf8', timeout: 60000 });
+        assert.equal(r.status, 0, r.stdout + r.stderr);
+        return JSON.parse(r.stdout.trim().split('\n').pop());
+    }
+    assert.deepEqual(interp('controlNegative'), [0, 0], 'controlNegative allocated in the interpreter');
+    const stock = interp('{ name: "1.4.2 shape", setup: () => ({ acc: 0 }), hot: (s, n) => {' +
+        ' let a = s.acc; for (let i = 0; i < n; i++) a += (i * 3) ^ i; s.acc = a; } }');
+    assert.ok(stock[1] > 0, 'teeth: the boxing 1.4.2 shape must scavenge here, saw ' + stock.join('/'));
+});
+
 test('verdict passes for a clean result', function () {
     const r = {
         name: 'clean', N: 1000, k: 4,

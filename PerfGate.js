@@ -38,7 +38,7 @@
  * MIT License
  */
 
-export const VERSION = '1.4.2';
+export const VERSION = '1.4.3';
 
 import {PerformanceObserver, constants} from 'node:perf_hooks';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -418,7 +418,22 @@ export const controlPositive = {
     }
 };
 
-/** Negative control: pure arithmetic, zero allocation. */
+// The negative control must be zero-allocation in EVERY tier, not only once
+// optimized. Up to 1.4.2 the loop was `a += (i * 3) ^ i`: the sum leaves Smi
+// range within the measured window (the 20000-iter warm-up stays below it),
+// the optimized code deopts on the Smi -> double transition, and until V8
+// re-optimizes, the interpreter boxes every add as a 16-byte HeapNumber.
+// Measured: interpreter-only (--jitless, 1MB pin, N=200000 k=8) the old shape
+// reads 2/24 scavenges on Node 22 and 26; Node 22 in a plain run reads N:1 in
+// most processes, and 8N:1 when re-optimization is slow (a loaded CI runner).
+// That is the "negative control forced 1 scavenges" detector failure. Masking
+// both operands keeps every intermediate below 2^30 -- a Smi even with 31-bit
+// Smis (pointer compression) -- so no tier can box it: 0/0 in all of the
+// above. Guarded by the --jitless test in test/self.test.mjs.
+const CONTROL_NEG_IMASK = 0xffff;    // (j*3)^j < 2^18
+const CONTROL_NEG_AMASK = 0xfffffff; // a < 2^28, a + 2^18 < 2^30
+
+/** Negative control: pure arithmetic, zero allocation in every V8 tier. */
 export const controlNegative = {
     name: 'CONTROL- (pure arithmetic)',
     setup: function () {
@@ -426,7 +441,10 @@ export const controlNegative = {
     },
     hot: function (s, n) {
         let a = s.acc;
-        for (let i = 0; i < n; i++) a += (i * 3) ^ i;
+        for (let i = 0; i < n; i++) {
+            const j = i & CONTROL_NEG_IMASK;
+            a = (a + ((j * 3) ^ j)) & CONTROL_NEG_AMASK;
+        }
         s.acc = a;
     }
 };

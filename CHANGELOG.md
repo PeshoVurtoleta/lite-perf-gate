@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.4.3] - 2026-10-04
+
+### Fixed
+
+- **`controlNegative` allocated whenever its loop was not optimized -- a
+  flaky detector failure on loaded CI runners.** The 1.4.2 loop,
+  `a += (i * 3) ^ i`, stays in Smi range through the 20000-iteration warm-up
+  but leaves it inside the measured window. The optimized code deopts on the
+  Smi -> double transition, and until V8 re-optimizes, the interpreter boxes
+  every add as a 16-byte HeapNumber. On a loaded runner re-optimization is
+  slow, so the "pure arithmetic" control scavenged:
+  `DETECTOR VALIDATION FAILED: negative control forced 1 scavenges (need <=0)`
+  for a consumer gating at `maxScavenges: 0` (lite-pick's perf gate on
+  GitHub Actions, Node 22 / ubuntu, CONTROL- N:1 8N:1). Measured (1MB
+  semi-space pin, N=200000 k=8): interpreter-only (`--jitless`) the old shape
+  reads 2/24 scavenges on Node 22.23 and 26.8; with
+  `--concurrent-recompilation-delay=20` the same; plain Node 22 reads N:1 in
+  most processes, and after `controlLarge` (4MB semi-space) 8N:1 in 5 of 12. The
+  loop now masks both operands (`j = i & 0xffff`,
+  `a = (a + ((j * 3) ^ j)) & 0xfffffff`) so every intermediate stays below
+  2^30 -- a Smi even with 31-bit Smis -- and reads 0/0 in every one of those
+  configurations. The fix is the control, not a retry: no ceiling, floor or
+  measurement window changed; `meterOnce`, `validateDetector` and
+  `CONTROL_NEG_CEIL` are byte-identical to 1.4.2. Name and shape
+  (`setup`/`hot`) are unchanged.
+
+### Added
+
+- **`test/self.test.mjs`: "negative control is zero-alloc in the
+  interpreter".** Two bare `--jitless` children at the 1MB pin: the library
+  `controlNegative` must read exactly 0/0, and the 1.4.2 shape (the teeth)
+  must scavenge -- so a regression to any boxing shape fails every run, not
+  one CI run in N. ~0.3 s per child.
+
 ## [1.4.2] - 2026-09-13
 
 Docs-only release. The library surface is unchanged: `PerfGate.js` differs from

@@ -197,7 +197,7 @@ Every value below is the source literal, enforced by the docs-drift guard (see [
 
 | Constant | Value | Meaning |
 | --- | --- | --- |
-| `VERSION` | `'1.4.2'` | Package version string (`=== package.json.version`). |
+| `VERSION` | `'1.4.3'` | Package version string (`=== package.json.version`). |
 | `N` | `200000` | Default low iteration count. |
 | `k` | `8` | Default scale factor; high pass is `k * N`. |
 | `flushMs` | `100` | Wait (ms) after the hot loop before reading the GC observer buffer; env `PERF_GATE_FLUSH_MS`. |

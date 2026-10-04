@@ -54,14 +54,15 @@ runGate(config) -- standalone report; returns {passed, code, results}. code:
 formatResult(result) -- one-line human summary of a MeasureResult (scavenges at
   N and k*N, retained KB, and oldgen / arrayBuffers / counter deltas only when
   nonzero). Pure string builder; used by zgcSuite/runGate report output.
-VERSION -- package version string ('1.4.2'); asserted === package.json.version.
+VERSION -- package version string ('1.4.3'); asserted === package.json.version.
 
 ## Built-in controls + detector floors
 
 controlPositive -- positive control: allocates one {x,y,z,w} per iteration into
   a bounded 64-slot ring (escapes AND dies young, so V8 escape-analysis and
   allocation-site pretenuring cannot make it invisible; decisions/0001).
-controlNegative -- negative control: pure arithmetic, zero allocation.
+controlNegative -- negative control: pure arithmetic, zero allocation in every V8
+  tier (interpreter included; operands masked so no intermediate leaves Smi range).
 controlLarge -- external/arrayBuffers control: a bounded, mask-gated retained
   pool of 64KB ArrayBuffers (~832KB at the pinned k*N, 13x the default gate);
   validates signal 5, measured LAST so its scheduled-scavenge residue poisons
@@ -185,3 +186,11 @@ statement, decisions/ links); llms.txt completed to gate-alone parity;
 test/docs.test.mjs drift guard added to files run by npm test. No library
 surface change: PerfGate.js diff vs 1.4.1 is the VERSION line plus comment-only
 header links to decisions/0001..0004.
+
+v1.4.3 fix: controlNegative is now zero-allocation in every V8 tier. Its 1.4.2
+loop (`a += (i * 3) ^ i`) pushed the sum out of Smi range inside the measured
+window; until V8 re-optimized, the interpreter boxed every add, so a loaded CI
+runner could read "negative control forced 1 scavenges" and fail detector
+validation for a consumer with maxScavenges 0. Operands are now masked
+(intermediates < 2^30). Guarded by a --jitless bare-child test whose teeth is
+the 1.4.2 shape (2/24 scavenges there). No other surface change.

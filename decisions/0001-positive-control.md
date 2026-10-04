@@ -173,3 +173,34 @@ NaN policy is P2's (decisions/0002).
   README in the first place.
 
 MIT (c) Zahary Shinikchiev <shinikchiev@yahoo.com>
+
+## Amendment 2026-10-04 (v1.4.3) -- the negative control must be zero-alloc in every tier
+
+The negative clause assumed `controlNegative` cannot allocate. It could:
+`a += (i * 3) ^ i` leaves Smi range inside the measured window (the
+20000-iteration warm-up stays below it), so the optimized loop deopts on
+the Smi -> double transition and the interpreter boxes every add (16-byte
+HeapNumber) until V8 re-optimizes. How long that takes depends on the
+machine's load, so on a loaded CI runner the control read 1 scavenge and,
+at a consumer's `maxScavenges: 0`, failed detector validation as "noisy
+process" -- the instrument blaming the environment for its own control.
+
+Measured (darwin; Node 22.23.3 and 26.8.2; `--expose-gc`, 1MB pin, N=200000
+k=8; minorLo/minorHi):
+
+| condition | 1.4.2 shape | masked shape |
+|---|---|---|
+| `--jitless` (interpreter only) | 2/24 | 0/0 |
+| `--concurrent-recompilation-delay=20` | 2/24 (26), 2/25 (22) | 0/0 |
+| Node 22 plain, after controlPositive | 1/0 | 0/0 |
+| Node 22 after controlLarge, 12 cold processes, 4MB semi-space | 1/1 in 5, 1/0 in 7 | 0/0 in 12 |
+
+Fix: mask both operands so every intermediate is below 2^30 (a Smi with
+or without pointer compression). Not a retry: a retried control would
+still be a control that can allocate. The ceiling is unchanged.
+
+Open question, not re-measured: decisions/0003's "controlLarge residue"
+(evenly spaced scavenges inside the following negative-control window,
+Node 26.3.1) has the same signature as this boxing. The ordering fix there
+stays; whether the residue survives the masked control on Node 26.3.1 is
+unverified (on 26.8.2 neither shape reproduces it).
