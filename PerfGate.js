@@ -39,7 +39,7 @@
  * MIT License
  */
 
-export const VERSION = '1.4.3';
+export const VERSION = '1.4.4';
 
 import {PerformanceObserver, constants} from 'node:perf_hooks';
 import {setTimeout as sleep} from 'node:timers/promises';

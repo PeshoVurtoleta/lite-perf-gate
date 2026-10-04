@@ -55,7 +55,7 @@ runGate(config) -- standalone report; returns {passed, code, results}. code:
 formatResult(result) -- one-line human summary of a MeasureResult (scavenges at
   N and k*N, retained KB, and oldgen / arrayBuffers / counter deltas only when
   nonzero). Pure string builder; used by zgcSuite/runGate report output.
-VERSION -- package version string ('1.4.3'); asserted === package.json.version.
+VERSION -- package version string ('1.4.4'); asserted === package.json.version.
 
 ## Built-in controls + detector floors
 
@@ -195,3 +195,11 @@ runner could read "negative control forced 1 scavenges" and fail detector
 validation for a consumer with maxScavenges 0. Operands are now masked
 (intermediates < 2^30). Guarded by a --jitless bare-child test whose teeth is
 the 1.4.2 shape (2/24 scavenges there). No other surface change.
+
+v1.4.4 docs+tests: the PG-02 "documented hole" is withdrawn. The census C1
+fixture ('x'.repeat(614400)) stored a never-flattened cons-rope, not a 600KB
+string; flattened (charCodeAt sunk into state) the churn fails at defaults on
+scavenges AND oldgen on Node 22.23 and 26.8, and torture T3a now asserts that.
+Torture T3b's C2 ring is 64 slots (16 was scavenge-reclaimed on Node 22, so
+oldGen read 0 there). No library surface change: PerfGate.js diff vs 1.4.3 is
+the VERSION line plus comments.

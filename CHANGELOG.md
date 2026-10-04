@@ -1,9 +1,18 @@
 # Changelog
 
-## [Unreleased]
+## [1.4.4] - 2026-10-04
 
 ### Fixed
 
+- **Torture T3b failed on Node 22.** On Node v22.23.3 the 16-slot C2 fixture
+  (512KB Float64Array churn) is reclaimed entirely by scavenges (about one
+  scavenge per 49 buffers, so a buffer dead within 16 never promotes), and
+  `oldGenHi` read 0. The gate still caught it via `scavenges:`, but T3b
+  asserts the `oldgen:` lane, so torture went red on Node 22. The fixture
+  ring is now 64 slots. Size, window and the T3b assertion are unchanged.
+  Real `measure()` over 20 reps per Node: Node 22 `oldGenHi` 30..56, caught
+  by oldgen 20/20; Node 26 `oldGenHi` 2 with `oldgen:` as the only reason,
+  20/20. decisions/0003 gains a Node 22 amendment.
 - **PG-02 is caught. The "C1 documented hole" was a fixture artifact.** The
   census fixture C1, `CHARS[i & 3].repeat(614400)`, stored a cons-rope (about
   2.4KB of nodes), not a 600KB string. `String.prototype.repeat` never
@@ -16,6 +25,9 @@
   649..654, oldGenHi 72..82; Node 26 minorHi 24..71, oldGenHi 8..24; 10/10
   each). It still fails on scavenges with the P3 lanes zeroed. Library code
   and defaults are unchanged.
+
+### Changed
+
 - **Torture T3a asserts the catch** instead of the hole signature. The
   fixture churns flat strings and must fail with both a `scavenges:` and an
   `oldgen:` reason. That makes it a second true-positive proof of the old-gen
@@ -28,6 +40,8 @@
   PG-02 re-census amendment. Axis D's choice of the arrayBuffers-pool
   `controlLarge` stands, on corrected grounds: flattened 256KB strings read
   oldGen 2..4, and 0 on Node 26 with 128MB of unrelated heap.
+- No library surface change: the `PerfGate.js` diff against 1.4.3 is the
+  `VERSION` line plus comments.
 
 ## [1.4.3] - 2026-10-04
 
